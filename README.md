@@ -12,8 +12,7 @@ This is a porting for IsaacLab of our paper:
   booktitle={2024 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)}, 
   title={Leveraging Symmetry in RL-based Legged Locomotion Control}, 
   year={2024},
-  volume={},
-  number={},
   pages={6899-6906},
+  doi={10.1109/IROS58592.2024.10802439}
 }
 ```
