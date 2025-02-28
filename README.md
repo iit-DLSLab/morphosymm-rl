@@ -16,9 +16,9 @@ This is a porting for IsaacLab of our paper:
   pages={6899-6906},
   doi={10.1109/IROS58592.2024.10802439}
 }
+```
 
-
-
+```
 @article{ordonez2025morphologicalsymmetries,
 author = {Daniel Ordoñez Apraez and Giulio Turrisi and Vladimir Kostic and Mario Martin and Antonio Agudo and Francesc Moreno-Noguer and Massimiliano Pontil and Claudio Semini and Carlos Mastalli},
 title ={Morphological symmetries in robotics},
