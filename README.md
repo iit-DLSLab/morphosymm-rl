@@ -20,13 +20,11 @@ This is a porting for IsaacLab of our paper:
 
 ```
 @article{ordonez2025morphologicalsymmetries,
-author = {Daniel Ordoñez Apraez and Giulio Turrisi and Vladimir Kostic and Mario Martin and Antonio Agudo and Francesc Moreno-Noguer and Massimiliano Pontil and Claudio Semini and Carlos Mastalli},
-title ={Morphological symmetries in robotics},
-journal = {The International Journal of Robotics Research},
-pages = {1-24},
-year = {2025},
-doi = {10.1177/02783649241282422},
+  author = {Daniel Ordoñez Apraez and Giulio Turrisi and Vladimir Kostic and Mario Martin and Antonio Agudo and Francesc Moreno-Noguer and Massimiliano Pontil and Claudio Semini and Carlos Mastalli},
+  title ={Morphological symmetries in robotics},
+  journal = {The International Journal of Robotics Research},
+  pages = {1-24},
+  year = {2025},
+  doi = {10.1177/02783649241282422},
 }
-
-
 ```
