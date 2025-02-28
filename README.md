@@ -7,6 +7,7 @@ Still work in progress. This repository will feature:
 
 This is a porting for IsaacLab of our paper:
 
+```
 @inproceedings{suhuang2024leveraging,
   booktitle={2024 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)}, 
   title={Leveraging Symmetry in RL-based Legged Locomotion Control}, 
@@ -15,3 +16,4 @@ This is a porting for IsaacLab of our paper:
   number={},
   pages={6899-6906},
 }
+```
