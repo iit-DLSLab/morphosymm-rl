@@ -8,13 +8,17 @@ import warnings
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
 
-from morpho_symm.nn.test_EMLP import get_kinematic_three_rep_two, get_ground_reaction_forces_rep_two, get_friction_rep
+#from morpho_symm.nn.test_EMLP import get_kinematic_three_rep_two, get_ground_reaction_forces_rep_two, get_friction_rep
+from test_EMLP import get_kinematic_three_rep_two, get_ground_reaction_forces_rep_two, get_friction_rep
+
 
 import escnn
 from escnn.nn import FieldType
 from hydra import compose, initialize
 
 from morpho_symm.utils.robot_utils import load_symmetric_system
+
+from hydra.core.global_hydra import GlobalHydra
 
 class PPOAugmented:
     """Proximal Policy Optimization algorithm with data augmentation via symmetries."""
@@ -24,7 +28,7 @@ class PPOAugmented:
 
     def __init__(self,
                  actor_critic,
-                 task, #to remove
+                 #task, #to remove
                  num_learning_epochs=1,
                  num_mini_batches=1,
                  clip_param=0.2,
@@ -71,10 +75,12 @@ class PPOAugmented:
         # For now, we ignore this
         self.rnd = None
         self.rnd_optimizer = None
+        self.symmetry = None
 
         # MorphoSymm components - our addition goes here!!
         global G
-        initialize(config_path="../../../MorphoSymm/morpho_symm/cfg/robot", version_base='1.3')
+        GlobalHydra.instance().clear()
+        initialize(config_path="./MorphoSymm/morpho_symm/cfg/robot", version_base='1.3')
         robot_name = 'a1'  # or any of the robots in the library (see `/morpho_symm/cfg/robot`)
         robot_cfg = compose(config_name=f"{robot_name}.yaml")
         robot, G = load_symmetric_system(robot_cfg=robot_cfg)
@@ -84,28 +90,41 @@ class PPOAugmented:
         # Get the relevant group representations.
         rep_QJ = G.representations["Q_js"]  # Used to transform joint-space position coordinates q_js ∈ Q_js
         rep_TqQJ = G.representations["TqQ_js"]  # Used to transform joint-space velocity coordinates v_js ∈ TqQ_js
-        rep_O3 = G.representations["Rd"]  # Used to transform the linear momentum l ∈ R3
-        rep_O3_pseudo = G.representations["Rd_pseudo"]  # Used to transform the angular momentum k ∈ R3
+        # IT WAS RD and RD_pseudo
+        rep_O3 = G.representations["R3"]  # Used to transform the linear momentum l ∈ R3
+        rep_O3_pseudo = G.representations["R3_pseudo"]  # Used to transform the angular momentum k ∈ R3
         trivial_rep = G.trivial_representation
         rep_kin_three = get_kinematic_three_rep_two(G)
         rep_friction = get_friction_rep(G, rep_kin_three)
         # Define the input and output FieldTypes using the representations of each geometric object.
         # Representation of x := [q, v] ∈ Q_js x TqQ_js      =>    ρ_X_js(g) := ρ_Q_js(g) ⊕ ρ_TqQ_js(g)  | g ∈ G
-        # This is for push door task:
-        if "push_door" in task:
-            base_transition = [rep_O3, rep_O3, rep_TqQJ, rep_TqQJ, rep_kin_three, rep_O3, rep_O3, rep_O3, rep_kin_three] * 5
-            rep_extra_obs = [rep_O3, rep_O3_pseudo, trivial_rep, trivial_rep, rep_friction, rep_O3, trivial_rep, trivial_rep, rep_kin_three, rep_kin_three, rep_kin_three, rep_kin_three, trivial_rep, trivial_rep]
+        """obs = torch.cat(
+            [
+                tensor
+                for tensor in (
+                    self._robot.data.root_lin_vel_b,
+                    self._robot.data.root_ang_vel_b,
+                    self._robot.data.projected_gravity_b,
+                    obs_commands,
+                    self._robot.data.joint_pos - self._robot.data.default_joint_pos,
+                    self._robot.data.joint_vel,
+                    self._actions,
+                    clock_data,
+                )
+                if tensor is not None
+            ],
+            dim=-1,
+        )"""
+        base_transition = [rep_O3, rep_O3_pseudo, rep_O3, rep_O3_pseudo, rep_QJ, rep_TqQJ, rep_QJ, rep_kin_three, rep_kin_three] * 3
+        rep_extra_obs = [rep_O3, rep_O3_pseudo, trivial_rep, trivial_rep, rep_friction, rep_O3, trivial_rep, trivial_rep, rep_kin_three, rep_kin_three, rep_kin_three, rep_kin_three, trivial_rep, trivial_rep]
 
-        # This is for stand dance task:  
-        else: 
-            base_transition = [rep_O3, rep_O3, rep_O3_pseudo, rep_TqQJ, rep_TqQJ, rep_TqQJ, rep_kin_three] * 3
-            rep_extra_obs = [rep_O3, rep_O3_pseudo, trivial_rep, trivial_rep, rep_friction, rep_O3, trivial_rep, trivial_rep, rep_kin_three, rep_kin_three, rep_kin_three, rep_kin_three, rep_kin_three]
 
         self.in_field_type = FieldType(gspace, base_transition)
         # Representation of y := [l, k] ∈ R3 x R3            =>    ρ_Y_js(g) := ρ_O3(g) ⊕ ρ_O3pseudo(g)  | g ∈ G
         self.out_field_type = FieldType(gspace, [rep_QJ])
 
-        self.critic_in_field_type = FieldType(gspace, base_transition + rep_extra_obs)
+        #self.critic_in_field_type = FieldType(gspace, base_transition + rep_extra_obs)
+        self.critic_in_field_type = FieldType(gspace, base_transition)
 
         self.num_replica = len(G.elements)
         self.G = G
@@ -118,7 +137,7 @@ class PPOAugmented:
             rnd_state_shape = None
         # create rollout storage
         self.storage = RolloutStorage(
-            num_envs,
+            num_envs * self.num_replica, #added here,
             num_transitions_per_env,
             actor_obs_shape,
             critic_obs_shape,
@@ -198,6 +217,7 @@ class PPOAugmented:
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
+        mean_entropy = 0
         mean_rnd_loss = None
         mean_symmetry_loss = None
 
