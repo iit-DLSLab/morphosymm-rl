@@ -129,15 +129,16 @@ class ActorCriticSymmEquivariantNN(nn.Module):
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
-    def update_distribution(self, observations):
+    """def update_distribution(self, observations):
         observations = self.in_field_type(observations)
         mean = self.actor(observations).tensor
 
-        self.distribution = Normal(mean, mean*0. + self.std)
+        self.distribution = Normal(mean, mean*0. + self.std)"""
 
-    """def update_distribution(self, observations):
+    def update_distribution(self, observations):
+        observations = self.in_field_type(observations)
         # compute mean
-        mean = self.actor(observations)
+        mean = self.actor(observations).tensor
         # compute standard deviation
         if self.noise_std_type == "scalar":
             std = self.std.expand_as(mean)
@@ -146,7 +147,7 @@ class ActorCriticSymmEquivariantNN(nn.Module):
         else:
             raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         # create distribution
-        self.distribution = Normal(mean, std)"""
+        self.distribution = Normal(mean, std)
 
 
     def act(self, observations, **kwargs):
