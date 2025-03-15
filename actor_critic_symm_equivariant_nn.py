@@ -6,15 +6,17 @@ import escnn
 from escnn.nn import FieldType, EquivariantModule, GeometricTensor
 from hydra import compose, initialize
 
-from morpho_symm.nn.EMLP import EMLP
-from morpho_symm.utils.robot_utils import load_symmetric_system
-from morpho_symm.nn.test_EMLP import get_kinematic_three_rep_two, get_ground_reaction_forces_rep_two, get_friction_rep
+from symm_utils import configure_observation_space_representations
+import escnn
+from escnn.nn import FieldType
+from hydra.core.global_hydra import GlobalHydra
 
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
+
 G = None
-class ActorCriticSymm(nn.Module):
+class ActorCriticSymmEquivariantNN(nn.Module):
     is_recurrent = False
     def __init__(self,  num_actor_obs,
                         num_critic_obs,
@@ -24,59 +26,51 @@ class ActorCriticSymm(nn.Module):
                         activation='elu',
                         init_noise_std=1.0,
                         noise_std_type: str = "scalar",
+                        robot_name: str = "a1",
                         **kwargs):
 
         super().__init__()
-        global G
-        # Load robot instance and its symmetry group
-        initialize(config_path="../../../MorphoSymm/morpho_symm/cfg/robot", version_base='1.3')
-        robot_name = 'a1'  # or any of the robots in the library (see `/morpho_symm/cfg/robot`)
-        robot_cfg = compose(config_name=f"{robot_name}.yaml")
-        robot, G = load_symmetric_system(robot_cfg=robot_cfg)
-        # We use ESCNN to handle the group/representation-theoretic concepts and for the construction of equivariant neural networks.
+
+
+        # MorphoSymm components - our addition goes here!!
+        #GlobalHydra.instance().clear()
+        obs_space_names = [
+            "base_lin_vel:base",
+            "base_ang_vel:base",
+            "gravity:base",
+            "ctrl_commands",
+            "default_qpos_js_error",
+            "qvel_js",
+            "actions",
+            "clock_data",
+        ]
+        action_space_names = ["actions"]
+
+        G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names)
+
+        obs_space_reps = [obs_reps[n] for n in obs_space_names] * 3
+        act_space_reps = [obs_reps[n] for n in action_space_names]
+        # rep_extra_obs = [rep_R3, rep_R3_pseudo, trivial_rep, trivial_rep, rep_friction, rep_R3, trivial_rep, trivial_rep, rep_kin_three, rep_kin_three, rep_kin_three, rep_kin_three, trivial_rep, trivial_rep]
+
         gspace = escnn.gspaces.no_base_space(G)
-        # Get the relevant group representations.
-        rep_QJ = G.representations["Q_js"]  # Used to transform joint-space position coordinates q_js ∈ Q_js
-        rep_TqQJ = G.representations["TqQ_js"]  # Used to transform joint-space velocity coordinates v_js ∈ TqQ_js
-        rep_O3 = G.representations["Rd"]  # Used to transform the linear momentum l ∈ R3
-        rep_O3_pseudo = G.representations["Rd_pseudo"]  # Used to transform the angular momentum k ∈ R3
-        trivial_rep = G.trivial_representation
-        rep_kin_three = get_kinematic_three_rep_two(G)
-        rep_friction = get_friction_rep(G, rep_kin_three)
+        self.in_field_type = FieldType(gspace, obs_space_reps)
+        self.out_field_type = FieldType(gspace, act_space_reps)
 
-        # Define the input and output FieldTypes using the representations of each geometric object.
-        # Representation of x := [q, v] ∈ Q_js x TqQ_js      =>    ρ_X_js(g) := ρ_Q_js(g) ⊕ ρ_TqQ_js(g)  | g ∈ G
-        # for push door task
-        if "push_door" in task:
-            base_transition = ([rep_O3, rep_O3, rep_TqQJ, rep_TqQJ, rep_kin_three, rep_O3, rep_O3, rep_O3, rep_kin_three]) * 5
-            rep_extra_obs = [rep_O3, rep_O3_pseudo, trivial_rep, trivial_rep, rep_friction, rep_O3, trivial_rep, trivial_rep, rep_kin_three, rep_kin_three, rep_kin_three, rep_kin_three, trivial_rep, trivial_rep]
+        self.critic_in_field_type = FieldType(gspace, obs_space_reps)
+        self.num_replica = len(G.elements)
+        self.G = G
 
-        # for stand dance and walk slope tasks
-        else:
-            base_transition = ([rep_O3, rep_O3, rep_O3_pseudo, rep_TqQJ, rep_TqQJ, rep_TqQJ, rep_kin_three]) * 3
-            rep_extra_obs = [rep_O3, rep_O3_pseudo, trivial_rep, trivial_rep, rep_friction, rep_O3, trivial_rep, trivial_rep, rep_kin_three, rep_kin_three, rep_kin_three, rep_kin_three, rep_kin_three]
-        
-        in_field_type = FieldType(gspace, base_transition)
-        # Representation of y := [l, k] ∈ R3 x R3            =>    ρ_Y_js(g) := ρ_O3(g) ⊕ ρ_O3pseudo(g)  | g ∈ G
-        out_field_type = FieldType(gspace, [rep_QJ])
-        
-        critic_in_field_type = FieldType(gspace, base_transition + rep_extra_obs)
-        
-        self.gspace = gspace
-        self.in_field_type = in_field_type
-        self.out_field_type = out_field_type
-        self.critic_in_field_type = critic_in_field_type
         
         # one dimensional field type for critic
         critic_out_field_type = FieldType(gspace, [G.trivial_representation])
 
         # Construct the equivariant MLP
 
-        self.actor = SimpleEMLP(in_field_type, out_field_type,
+        self.actor = SimpleEMLP(self.in_field_type, self.out_field_type,
             hidden_dims = actor_hidden_dims, 
             activation = activation,)
 
-        self.critic = SimpleEMLP(critic_in_field_type, critic_out_field_type,
+        self.critic = SimpleEMLP(self.critic_in_field_type, critic_out_field_type,
             hidden_dims = critic_hidden_dims,
             activation=activation,)
 

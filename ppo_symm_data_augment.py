@@ -9,24 +9,13 @@ from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
 
 from symm_utils import configure_observation_space_representations
-# from morpho_symm.nn.test_EMLP import get_kinematic_three_rep_two, get_ground_reaction_forces_rep_two, get_friction_rep
-#from test_EMLP import (
-#    get_kinematic_three_rep_two,
-#    get_ground_reaction_forces_rep_two,
-#    get_friction_rep,
-#)
-
-
 import escnn
 from escnn.nn import FieldType
-from hydra import compose, initialize
-
-from morpho_symm.utils.robot_utils import load_symmetric_system
 
 from hydra.core.global_hydra import GlobalHydra
+from hydra import compose, initialize
 
-
-class PPOAugmented:
+class PPOSymmDataAugmented:
     """Proximal Policy Optimization algorithm with data augmentation via symmetries."""
 
     actor_critic: ActorCritic
