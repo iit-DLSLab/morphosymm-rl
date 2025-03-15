@@ -46,6 +46,14 @@ def configure_observation_space_representations(
         )
     rep_yaw = escnn_representation_form_mapping(G, {g: rep_Rd_pseudo(g)[2:3, 2:3] for g in G.elements}, name='base_yaw')
 
+    rep_ctrl_commands_lin = escnn_representation_form_mapping(
+        G, {g: rep_Rd(g)[0:2, 0:2] for g in G.elements}, name='ctrl_commands_lin_xy_dot'
+        )
+    rep_ctrl_commands_ang = escnn_representation_form_mapping(
+        G, {g: rep_Rd_pseudo(g)[2:3, 2:3] for g in G.elements}, name='ctrl_commands_yaw_rate'
+        )
+    
+
     obs_reps = {}
     for obs_name in obs_names:
         # Generalized position, velocity, and force (torque) spaces
@@ -83,6 +91,8 @@ def configure_observation_space_representations(
             obs_reps[obs_name] = rep_Rd
         elif 'imu_gyro' in obs_names:  # Same as angular velocity
             obs_reps[obs_name] = rep_Rd_pseudo
+        elif 'ctrl_commands' in obs_name:
+            obs_reps[obs_name] = rep_ctrl_commands_lin + rep_ctrl_commands_ang
         else:
             raise ValueError(f'Invalid observation name: {obs_name}')
 

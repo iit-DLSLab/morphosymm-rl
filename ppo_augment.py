@@ -10,11 +10,11 @@ from rsl_rl.storage import RolloutStorage
 
 from symm_utils import configure_observation_space_representations
 # from morpho_symm.nn.test_EMLP import get_kinematic_three_rep_two, get_ground_reaction_forces_rep_two, get_friction_rep
-from test_EMLP import (
-    get_kinematic_three_rep_two,
-    get_ground_reaction_forces_rep_two,
-    get_friction_rep,
-)
+#from test_EMLP import (
+#    get_kinematic_three_rep_two,
+#    get_ground_reaction_forces_rep_two,
+#    get_friction_rep,
+#)
 
 
 import escnn
@@ -85,6 +85,7 @@ class PPOAugmented:
         self.symmetry = None
 
         # MorphoSymm components - our addition goes here!!
+        GlobalHydra.instance().clear()
         obs_space_names = [
             "base_lin_vel:base",
             "base_ang_vel:base",
