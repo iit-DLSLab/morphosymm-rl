@@ -87,6 +87,12 @@ class PPOSymmDataAugmented:
         ]
         action_space_names = ["actions"]
 
+
+        joints_order = ["FL_hip_joint", "FR_hip_joint", "RL_hip_joint", "RR_hip_joint", 
+                        "FL_thigh_joint", "FR_thigh_joint", "RL_thigh_joint", "RR_thigh_joint",
+                        "FL_calf_joint", "FR_calf_joint", "RL_calf_joint", "RR_calf_joint"]
+
+
         G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names)
 
         obs_space_reps = [obs_reps[n] for n in obs_space_names] * 3
@@ -202,14 +208,11 @@ class PPOSymmDataAugmented:
         t.values = torch.cat([t.values] * self.num_replica, dim=0)
         t.rewards = torch.cat([t.rewards] * self.num_replica, dim=0)
         t.dones = torch.cat([t.dones] * self.num_replica, dim=0)
-        t.observations = torch.cat(
-            [t.observations]
-            + [
-                in_field_type.transform_fibers(t.observations, g)
-                for g in G.elements[1:]
-            ],
-            dim=0,
-        )
+        print("first breakpoint")
+        breakpoint()
+        t.observations = torch.cat([t.observations] + [in_field_type.transform_fibers(t.observations, g) for g in G.elements[1:]], dim=0,)
+        print("second breakpoint")
+        breakpoint()
         t.critic_observations = torch.cat(
             [t.critic_observations]
             + [
