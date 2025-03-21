@@ -5,12 +5,13 @@ Still work in progress. This repository will feature:
 - PPO with data augmentation
 - PPO with symmetry constraint in the NN
 
-Install this package with 
+Install this package with https://github.com/giulioturrisi/quadruped_rl_collection for now.
 ```bash
 pip install -e .
 ```
 You may need to install MorphoSymm manually for now
 
+Use this repo in conjuction with 
 
 This is a porting for IsaacLab of our paper:
 
