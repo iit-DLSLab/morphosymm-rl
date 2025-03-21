@@ -49,7 +49,12 @@ class ActorCriticSymmEquivariantNN(nn.Module):
         ]
         action_space_names = ["actions"]
 
-        G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names)
+        # this is used for actions, default_qpos_js_error, qvel_js
+        joints_order = ["FL_hip_joint", "FR_hip_joint", "RL_hip_joint", "RR_hip_joint", 
+                        "FL_thigh_joint", "FR_thigh_joint", "RL_thigh_joint", "RR_thigh_joint",
+                        "FL_calf_joint", "FR_calf_joint", "RL_calf_joint", "RR_calf_joint"]
+
+        G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names, joints_order)
 
         obs_space_reps = [obs_reps[n] for n in obs_space_names] * 3
         act_space_reps = [obs_reps[n] for n in action_space_names]

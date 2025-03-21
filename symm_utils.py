@@ -6,7 +6,7 @@ from escnn.group import Group, Representation
 
 
 def configure_observation_space_representations(
-        robot_name: str, obs_names: Sequence[str]
+        robot_name: str, obs_names: Sequence[str], joints_order: list,
         ) -> [Group, dict[str, Representation]]:
     try:
         import morpho_symm
@@ -18,7 +18,7 @@ def configure_observation_space_representations(
     except ImportError as e:
         raise ImportError('morpho_symm package is required to configure observation group representations') from e
 
-    G = load_symmetric_system(robot_name=robot_name, return_robot=False)
+    G = load_symmetric_system(robot_name=robot_name, return_robot=False, joint_space_order=joints_order)
     rep_Q_js = G.representations['Q_js']  # Representation on joint space position coordinates
     rep_TqQ_js = G.representations['TqQ_js']  # Representation on joint space velocity coordinates
     rep_Rd = G.representations['R3']  # Representation on vectors in R^d

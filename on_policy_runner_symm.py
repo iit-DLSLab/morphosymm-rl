@@ -382,7 +382,7 @@ class OnPolicyRunnerSymm:
             self.writer.save_model(path, self.current_learning_iteration)
 
     def load(self, path: str, load_optimizer: bool = True):
-        loaded_dict = torch.load(path, weights_only=False)
+        """loaded_dict = torch.load(path, weights_only=False)
         # -- Load PPO model
         self.alg.actor_critic.load_state_dict(loaded_dict["model_state_dict"])
         # -- Load RND model if used
@@ -401,7 +401,15 @@ class OnPolicyRunnerSymm:
                 self.alg.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
         # -- Load current learning iteration
         self.current_learning_iteration = loaded_dict["iter"]
-        return loaded_dict["infos"]
+        return loaded_dict["infos"]"""
+        self.alg.actor_critic.eval() # switch to evaluation mode (dropout for example)
+        loaded_dict = torch.load(path, map_location=self.device)
+        self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'], strict=False)
+        # if load_optimizer:
+        #     self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
+        self.current_learning_iteration = loaded_dict['iter']
+        return loaded_dict['infos']
+
 
     def get_inference_policy(self, device=None):
         self.eval_mode()  # switch to evaluation mode (dropout for example)
