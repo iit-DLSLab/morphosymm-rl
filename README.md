@@ -5,6 +5,13 @@ Still work in progress. This repository will feature:
 - PPO with data augmentation
 - PPO with symmetry constraint in the NN
 
+Install this package with 
+```bash
+pip install -e .
+```
+You may need to install MorphoSymm manually for now
+
+
 This is a porting for IsaacLab of our paper:
 
 ```
