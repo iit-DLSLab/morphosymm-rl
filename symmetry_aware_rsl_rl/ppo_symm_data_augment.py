@@ -8,7 +8,7 @@ import warnings
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
 
-from symm_utils import configure_observation_space_representations
+from symmetry_aware_rsl_rl.symm_utils import configure_observation_space_representations
 import escnn
 from escnn.nn import FieldType
 
@@ -74,7 +74,6 @@ class PPOSymmDataAugmented:
         self.symmetry = None
 
         # MorphoSymm components - our addition goes here!!
-        GlobalHydra.instance().clear()
         obs_space_names = [
             "base_lin_vel:base",
             "base_ang_vel:base",
@@ -93,9 +92,9 @@ class PPOSymmDataAugmented:
                         "FL_calf_joint", "FR_calf_joint", "RL_calf_joint", "RR_calf_joint"]
 
 
-        G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names)
+        G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names, joints_order)
 
-        obs_space_reps = [obs_reps[n] for n in obs_space_names] * 3
+        obs_space_reps = [obs_reps[n] for n in obs_space_names] * 1
         act_space_reps = [obs_reps[n] for n in action_space_names]
         # rep_extra_obs = [rep_R3, rep_R3_pseudo, trivial_rep, trivial_rep, rep_friction, rep_R3, trivial_rep, trivial_rep, rep_kin_three, rep_kin_three, rep_kin_three, rep_kin_three, trivial_rep, trivial_rep]
 
@@ -208,19 +207,9 @@ class PPOSymmDataAugmented:
         t.values = torch.cat([t.values] * self.num_replica, dim=0)
         t.rewards = torch.cat([t.rewards] * self.num_replica, dim=0)
         t.dones = torch.cat([t.dones] * self.num_replica, dim=0)
-        print("first breakpoint")
-        breakpoint()
         t.observations = torch.cat([t.observations] + [in_field_type.transform_fibers(t.observations, g) for g in G.elements[1:]], dim=0,)
-        print("second breakpoint")
-        breakpoint()
-        t.critic_observations = torch.cat(
-            [t.critic_observations]
-            + [
-                critic_in_field_type.transform_fibers(t.critic_observations, g)
-                for g in G.elements[1:]
-            ],
-            dim=0,
-        )
+        t.critic_observations = torch.cat([t.critic_observations] + [critic_in_field_type.transform_fibers(t.critic_observations, g) for g in G.elements[1:]], dim=0,)
+        
 
     def augment_values(self, values):
         values = torch.cat([values] * self.num_replica, dim=0)

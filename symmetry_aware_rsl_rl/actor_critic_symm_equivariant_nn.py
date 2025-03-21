@@ -6,7 +6,7 @@ import escnn
 from escnn.nn import FieldType, EquivariantModule, GeometricTensor
 from hydra import compose, initialize
 
-from symm_utils import configure_observation_space_representations
+from symmetry_aware_rsl_rl.symm_utils import configure_observation_space_representations
 import escnn
 from escnn.nn import FieldType
 from hydra.core.global_hydra import GlobalHydra

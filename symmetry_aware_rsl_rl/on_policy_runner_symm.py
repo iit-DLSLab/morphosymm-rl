@@ -17,8 +17,8 @@ from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
 from rsl_rl.utils import store_code_state
 
-from ppo_symm_data_augment import PPOSymmDataAugmented
-from actor_critic_symm_equivariant_nn import ActorCriticSymmEquivariantNN
+from symmetry_aware_rsl_rl.ppo_symm_data_augment import PPOSymmDataAugmented
+from symmetry_aware_rsl_rl.actor_critic_symm_equivariant_nn import ActorCriticSymmEquivariantNN
 
 
 class OnPolicyRunnerSymm:
