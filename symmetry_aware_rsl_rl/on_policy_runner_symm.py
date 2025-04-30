@@ -31,6 +31,15 @@ class OnPolicyRunnerSymm:
         self.device = device
         self.env = env
 
+
+        # resolve training type depending on the algorithm
+        if self.alg_cfg["class_name"] == "PPO" or self.alg_cfg["class_name"] == "PPOSymmDataAugmented":
+            self.training_type = "rl"
+        elif self.alg_cfg["class_name"] == "Distillation":
+            self.training_type = "distillation"
+        else:
+            raise ValueError(f"Training type not found for algorithm {self.alg_cfg['class_name']}.")
+
         # resolve dimensions of observations
         obs, extras = self.env.get_observations()
         num_obs = obs.shape[1]
@@ -38,8 +47,8 @@ class OnPolicyRunnerSymm:
             num_critic_obs = extras["observations"]["critic"].shape[1]
         else:
             num_critic_obs = num_obs
-        actor_critic_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
-        actor_critic: ActorCritic | ActorCriticRecurrent | ActorCriticSymmEquivariantNN = actor_critic_class(
+        policy_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
+        policy: ActorCritic | ActorCriticRecurrent | ActorCriticSymmEquivariantNN = policy_class(
             num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
@@ -63,7 +72,7 @@ class OnPolicyRunnerSymm:
 
         # init algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
-        self.alg: PPO | PPOSymmDataAugmented = alg_class(actor_critic, device=self.device, **self.alg_cfg)
+        self.alg: PPO | PPOSymmDataAugmented = alg_class(policy, device=self.device, **self.alg_cfg)
 
         # store training configuration
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
@@ -77,6 +86,7 @@ class OnPolicyRunnerSymm:
             self.critic_obs_normalizer = torch.nn.Identity().to(self.device)  # no normalization
         # init storage and model
         self.alg.init_storage(
+            self.training_type,
             self.env.num_envs,
             self.num_steps_per_env,
             [num_obs],
@@ -264,7 +274,7 @@ class OnPolicyRunnerSymm:
                 else:
                     self.writer.add_scalar("Episode/" + key, value, locs["it"])
                     ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
-        mean_std = self.alg.actor_critic.action_std.mean()
+        mean_std = self.alg.policy.action_std.mean()
         fps = int(self.num_steps_per_env * self.env.num_envs / (locs["collection_time"] + locs["learn_time"]))
 
         # -- Losses
@@ -362,7 +372,7 @@ class OnPolicyRunnerSymm:
     def save(self, path: str, infos=None):
         # -- Save PPO model
         saved_dict = {
-            "model_state_dict": self.alg.actor_critic.state_dict(),
+            "model_state_dict": self.alg.policy.state_dict(),
             "optimizer_state_dict": self.alg.optimizer.state_dict(),
             "iter": self.current_learning_iteration,
             "infos": infos,
@@ -402,9 +412,9 @@ class OnPolicyRunnerSymm:
         # -- Load current learning iteration
         self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]"""
-        self.alg.actor_critic.eval() # switch to evaluation mode (dropout for example)
+        self.alg.policy.eval() # switch to evaluation mode (dropout for example)
         loaded_dict = torch.load(path, map_location=self.device)
-        self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'], strict=False)
+        self.alg.policy.load_state_dict(loaded_dict['model_state_dict'], strict=False)
         # if load_optimizer:
         #     self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
         self.current_learning_iteration = loaded_dict['iter']
@@ -414,17 +424,17 @@ class OnPolicyRunnerSymm:
     def get_inference_policy(self, device=None):
         self.eval_mode()  # switch to evaluation mode (dropout for example)
         if device is not None:
-            self.alg.actor_critic.to(device)
-        policy = self.alg.actor_critic.act_inference
+            self.alg.policy.to(device)
+        policy = self.alg.policy.act_inference
         if self.cfg["empirical_normalization"]:
             if device is not None:
                 self.obs_normalizer.to(device)
-            policy = lambda x: self.alg.actor_critic.act_inference(self.obs_normalizer(x))  # noqa: E731
+            policy = lambda x: self.alg.policy.act_inference(self.obs_normalizer(x))  # noqa: E731
         return policy
 
     def train_mode(self):
         # -- PPO
-        self.alg.actor_critic.train()
+        self.alg.policy.train()
         # -- RND
         if self.alg.rnd:
             self.alg.rnd.train()
@@ -435,7 +445,7 @@ class OnPolicyRunnerSymm:
 
     def eval_mode(self):
         # -- PPO
-        self.alg.actor_critic.eval()
+        self.alg.policy.eval()
         # -- RND
         if self.alg.rnd:
             self.alg.rnd.eval()

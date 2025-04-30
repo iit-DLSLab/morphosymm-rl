@@ -18,12 +18,12 @@ from hydra import compose, initialize
 class PPOSymmDataAugmented:
     """Proximal Policy Optimization algorithm with data augmentation via symmetries."""
 
-    actor_critic: ActorCritic
+    policy: ActorCritic
     """The actor critic module."""
 
     def __init__(
         self,
-        actor_critic,
+        policy,
         # task, #to remove
         num_learning_epochs=1,
         num_mini_batches=1,
@@ -49,10 +49,10 @@ class PPOSymmDataAugmented:
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
 
         # PPO components
-        self.actor_critic = actor_critic
-        self.actor_critic.to(self.device)
+        self.policy = policy
+        self.policy.to(self.device)
         # Create optimizer
-        self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
         # Create rollout storage
         self.storage: RolloutStorage = None  # type: ignore
         self.transition = RolloutStorage.Transition()
@@ -107,12 +107,7 @@ class PPOSymmDataAugmented:
         self.G = G
 
     def init_storage(
-        self,
-        num_envs,
-        num_transitions_per_env,
-        actor_obs_shape,
-        critic_obs_shape,
-        action_shape,
+        self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, actions_shape
     ):
         # create memory for RND as well :)
         if self.rnd:
@@ -121,35 +116,34 @@ class PPOSymmDataAugmented:
             rnd_state_shape = None
         # create rollout storage
         self.storage = RolloutStorage(
+            training_type,
             num_envs * self.num_replica,  # added here,
             num_transitions_per_env,
             actor_obs_shape,
             critic_obs_shape,
-            action_shape,
+            actions_shape,
             rnd_state_shape,
             self.device,
         )
 
     def test_mode(self):
-        self.actor_critic.test()
+        self.policy.test()
 
     def train_mode(self):
-        self.actor_critic.train()
+        self.policy.train()
 
     def act(self, obs, critic_obs):
-        if self.actor_critic.is_recurrent:
-            self.transition.hidden_states = self.actor_critic.get_hidden_states()
+        if self.policy.is_recurrent:
+            self.transition.hidden_states = self.policy.get_hidden_states()
         # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
-        self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(
-            self.transition.actions
-        ).detach()
-        self.transition.action_mean = self.actor_critic.action_mean.detach()
-        self.transition.action_sigma = self.actor_critic.action_std.detach()
+        self.transition.actions = self.policy.act(obs).detach()
+        self.transition.values = self.policy.evaluate(critic_obs).detach()
+        self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
+        self.transition.action_mean = self.policy.action_mean.detach()
+        self.transition.action_sigma = self.policy.action_std.detach()
         # need to record obs and critic_obs before env.step()
         self.transition.observations = obs
-        self.transition.critic_observations = critic_obs
+        self.transition.privileged_observations = critic_obs
         return self.transition.actions
 
     def process_env_step(self, rewards, dones, infos):
@@ -172,7 +166,7 @@ class PPOSymmDataAugmented:
         # Record the transition
         self.storage.add_transitions(self.transition)
         self.transition.clear()
-        self.actor_critic.reset(dones)
+        self.policy.reset(dones)
 
     def augment_transitions(self):
         t = self.transition
@@ -208,7 +202,7 @@ class PPOSymmDataAugmented:
         t.rewards = torch.cat([t.rewards] * self.num_replica, dim=0)
         t.dones = torch.cat([t.dones] * self.num_replica, dim=0)
         t.observations = torch.cat([t.observations] + [in_field_type.transform_fibers(t.observations, g) for g in G.elements[1:]], dim=0,)
-        t.critic_observations = torch.cat([t.critic_observations] + [critic_in_field_type.transform_fibers(t.critic_observations, g) for g in G.elements[1:]], dim=0,)
+        t.privileged_observations = torch.cat([t.privileged_observations] + [critic_in_field_type.transform_fibers(t.privileged_observations, g) for g in G.elements[1:]], dim=0,)
         
 
     def augment_values(self, values):
@@ -216,7 +210,7 @@ class PPOSymmDataAugmented:
         return values
 
     def compute_returns(self, last_critic_obs):
-        last_values = self.actor_critic.evaluate(last_critic_obs).detach()
+        last_values = self.policy.evaluate(last_critic_obs).detach()
         last_values = self.augment_values(last_values)
         self.storage.compute_returns(
             last_values,
@@ -233,7 +227,7 @@ class PPOSymmDataAugmented:
         mean_symmetry_loss = None
 
         # generator for mini batches
-        if self.actor_critic.is_recurrent:
+        if self.policy.is_recurrent:
             generator = self.storage.recurrent_mini_batch_generator(
                 self.num_mini_batches, self.num_learning_epochs
             )
@@ -271,23 +265,23 @@ class PPOSymmDataAugmented:
                     )
 
             # Recompute actions log prob and entropy for current batch of transitions
-            # Note: we need to do this because we updated the actor_critic with the new parameters
+            # Note: we need to do this because we updated the policy with the new parameters
             # -- actor
-            self.actor_critic.act(
+            self.policy.act(
                 obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0]
             )
-            actions_log_prob_batch = self.actor_critic.get_actions_log_prob(
+            actions_log_prob_batch = self.policy.get_actions_log_prob(
                 actions_batch
             )
             # -- critic
-            value_batch = self.actor_critic.evaluate(
+            value_batch = self.policy.evaluate(
                 critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1]
             )
             # -- entropy
             # we only keep the entropy of the first augmentation (the original one)
-            mu_batch = self.actor_critic.action_mean[:original_batch_size]
-            sigma_batch = self.actor_critic.action_std[:original_batch_size]
-            entropy_batch = self.actor_critic.entropy[:original_batch_size]
+            mu_batch = self.policy.action_mean[:original_batch_size]
+            sigma_batch = self.policy.action_std[:original_batch_size]
+            entropy_batch = self.policy.entropy[:original_batch_size]
 
             # KL
             if self.desired_kl is not None and self.schedule == "adaptive":
@@ -352,7 +346,7 @@ class PPOSymmDataAugmented:
             # -- For PPO
             self.optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.optimizer.step()
             # -- For RND
             if self.rnd_optimizer:
