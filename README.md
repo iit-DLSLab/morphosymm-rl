@@ -19,7 +19,6 @@ TODO
 ## Citing this work
 
 If you find the work useful, please consider citing one of our works: 
-This is a porting for IsaacLab of our paper:
 
 ```
 @inproceedings{suhuang2024leveraging,
