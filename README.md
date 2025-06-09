@@ -1,19 +1,24 @@
-# symmetry_aware_rsl_rl
+## Overview
+
+Symmetry-aware-rsl-rl is a reinforcement learning library for Isaac-Lab that extends the Proximal Policy Optimization (PPO) implementation of [RSL-RL](https://github.com/leggedrobotics/rsl_rl) with [Morphological Symmetries](https://arxiv.org/abs/2402.15552]). This enables data augmentation of robotics systems, or directly embedding symmetry constraints through equivariant neural networks in the actor-critic structure. See the end of this README if you want to cite our work.
 
 
-Still work in progress. This repository will feature:
-- PPO with data augmentation
-- PPO with symmetry constraint in the NN
-
+## Installation
 Install this package with:
 ```bash
 pip install -e .
 ```
-You may need to install MorphoSymm manually for now.
 
-Use this repo in conjuction with https://github.com/giulioturrisi/quadruped_rl_collection for now.
+For now, you need to install MorphoSymm and rsl-rl independently. Enter in their folders (they are submodules in this project) and do pip install -e .
 
-This is a porting for IsaacLab of our paper:
+
+## How to use
+TODO
+
+
+## Citing this work
+
+If you find the work useful, please consider citing one of our works: 
 
 ```
 @inproceedings{suhuang2024leveraging,
