@@ -374,4 +374,17 @@ class PPOSymmDataAugmented:
         # -- Clear the storage
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss, mean_entropy, mean_rnd_loss, None
+        # construct the loss dictionary
+        loss_dict = {
+            "value_function": mean_value_loss,
+            "surrogate": mean_surrogate_loss,
+            "entropy": mean_entropy,
+        }
+        if self.rnd:
+            loss_dict["rnd"] = mean_rnd_loss
+        if self.symmetry:
+            loss_dict["symmetry"] = mean_symmetry_loss
+        
+        return loss_dict
+
+        #return mean_value_loss, mean_surrogate_loss, mean_entropy, mean_rnd_loss, None
