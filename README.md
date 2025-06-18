@@ -33,7 +33,7 @@ If you find the work useful, please consider citing one of our works:
 
 ```
 @article{ordonez2025morphologicalsymmetries,
-  author = {Daniel Ordoñez Apraez and Giulio Turrisi and Vladimir Kostic and Mario Martin and Antonio Agudo and Francesc Moreno-Noguer and Massimiliano Pontil and Claudio Semini and Carlos Mastalli},
+  author = {Daniel Ordoñez-Apraez and Giulio Turrisi and Vladimir Kostic and Mario Martin and Antonio Agudo and Francesc Moreno-Noguer and Massimiliano Pontil and Claudio Semini and Carlos Mastalli},
   title ={Morphological symmetries in robotics},
   journal = {The International Journal of Robotics Research},
   pages = {1-24},

@@ -32,6 +32,7 @@ class ActorCriticSymmEquivariantNN(ActorCritic):
     ):
         # Instead of calling ActorCritic.__init__, call torch.nn.Module.__init__
         torch.nn.Module.__init__(self)
+        # Cache init args for export function
         self._ac_kwargs = dict(
             actor_hidden_dims=actor_hidden_dims,
             critic_hidden_dims=critic_hidden_dims,
@@ -158,7 +159,9 @@ class ActorCriticSymmEquivariantNN(ActorCritic):
 
 
 class SimpleEMLP(EquivariantModule):
-    def __init__(
+    """A simple equivariant MLP for actor-critic networks."""
+
+    def __init__(  # noqa: D107
         self,
         in_type: FieldType,
         out_type: FieldType,
@@ -203,6 +206,7 @@ class SimpleEMLP(EquivariantModule):
             )
 
     def forward(self, x: GeometricTensor) -> GeometricTensor:
+        """Forward pass through the equivariant MLP."""
         x = self.net(x)
         if self.extra_layer:
             x = self.extra_layer(x.tensor)
@@ -210,6 +214,7 @@ class SimpleEMLP(EquivariantModule):
 
     @staticmethod
     def get_activation(activation: str, hidden_type: FieldType) -> EquivariantModule:
+        """Returns the activation function based on the provided string."""
         if activation.lower() == "relu":
             return escnn.nn.ReLU(hidden_type)
         elif activation.lower() == "elu":
