@@ -13,7 +13,7 @@ For now, you need to install MorphoSymm and rsl-rl independently. Enter in their
 
 
 ## How to use
-To use it, you just need to change the usal rsl_rl_ppo_cfg.py file of your task in IsaacLab. For an example, see the folder [example](https://github.com/iit-DLSLab/morphosymm-rl/tree/main/morphosymm_rl/example) within this repo.
+To use it, you just need first to change the usual rsl_rl_ppo_cfg.py file of your task in IsaacLab. Second, you need to use ad-hoc train.py and play.py files to launch your training/testing. See [here](https://github.com/iit-DLSLab/morphosymm-rl/tree/main/morphosymm_rl/example) for an example.
 
 
 ## Citing this work
