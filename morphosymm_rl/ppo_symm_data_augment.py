@@ -8,7 +8,7 @@ import warnings
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
 
-from symmetry_aware_rsl_rl.symm_utils import configure_observation_space_representations
+from morphosymm_rl.symm_utils import configure_observation_space_representations
 import escnn
 from escnn.nn import FieldType
 
