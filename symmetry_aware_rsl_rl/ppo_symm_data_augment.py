@@ -24,7 +24,6 @@ class PPOSymmDataAugmented:
     def __init__(
         self,
         policy,
-        # task, #to remove
         num_learning_epochs=1,
         num_mini_batches=1,
         clip_param=0.2,
@@ -39,7 +38,7 @@ class PPOSymmDataAugmented:
         desired_kl=0.01,
         device="cpu",
         normalize_advantage_per_mini_batch=False,  # added
-        robot_name: str = "a1",
+        **morphologycal_symmetries_cfg,
     ):
         self.device = device
 
@@ -73,28 +72,17 @@ class PPOSymmDataAugmented:
         self.rnd_optimizer = None
         self.symmetry = None
 
-        # MorphoSymm components - our addition goes here!!
-        obs_space_names = [
-            "base_lin_vel:base",
-            "base_ang_vel:base",
-            "gravity:base",
-            "ctrl_commands",
-            "default_qpos_js_error",
-            "qvel_js",
-            "actions",
-            "clock_data",
-        ]
-        action_space_names = ["actions"]
-
-        # this is used for actions, default_qpos_js_error, qvel_js
-        joints_order = ["FL_hip_joint", "FR_hip_joint", "RL_hip_joint", "RR_hip_joint", 
-                        "FL_thigh_joint", "FR_thigh_joint", "RL_thigh_joint", "RR_thigh_joint",
-                        "FL_calf_joint", "FR_calf_joint", "RL_calf_joint", "RR_calf_joint"]
-
+        # MorphoSymm components
+        obs_space_names = morphologycal_symmetries_cfg["obs_space_names"] 
+        action_space_names = morphologycal_symmetries_cfg["action_space_names"]
+        joints_order = morphologycal_symmetries_cfg["joints_order"]
+        history_length = morphologycal_symmetries_cfg["history_length"]
+        robot_name = morphologycal_symmetries_cfg["robot_name"]
+        
 
         G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names, joints_order)
 
-        obs_space_reps = [obs_reps[n] for n in obs_space_names] * 3
+        obs_space_reps = [obs_reps[n] for n in obs_space_names] * history_length
         act_space_reps = [obs_reps[n] for n in action_space_names]
         # rep_extra_obs = [rep_R3, rep_R3_pseudo, trivial_rep, trivial_rep, rep_friction, rep_R3, trivial_rep, trivial_rep, rep_kin_three, rep_kin_three, rep_kin_three, rep_kin_three, trivial_rep, trivial_rep]
 

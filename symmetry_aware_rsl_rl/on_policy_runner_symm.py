@@ -31,6 +31,8 @@ class OnPolicyRunnerSymm:
         self.device = device
         self.env = env
 
+        self.morphologycal_symmetries_cfg = train_cfg["morphologycal_symmetries_cfg"]
+
 
         # resolve training type depending on the algorithm
         if self.alg_cfg["class_name"] == "PPO" or self.alg_cfg["class_name"] == "PPOSymmDataAugmented":
@@ -47,10 +49,17 @@ class OnPolicyRunnerSymm:
             num_critic_obs = extras["observations"]["critic"].shape[1]
         else:
             num_critic_obs = num_obs
-        policy_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
-        policy: ActorCritic | ActorCriticRecurrent | ActorCriticSymmEquivariantNN = policy_class(
-            num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg
-        ).to(self.device)
+
+        if(self.policy_cfg["class_name"] == "ActorCriticSymmEquivariantNN"):
+            policy_class = eval(self.policy_cfg.pop("class_name"))  
+            policy: ActorCriticSymmEquivariantNN = policy_class(
+                num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg, **self.morphologycal_symmetries_cfg
+            ).to(self.device)
+        else:
+            policy_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
+            policy: ActorCritic | ActorCriticRecurrent = policy_class(
+                num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg
+            ).to(self.device)
 
         # resolve dimension of rnd gated state
         if "rnd_cfg" in self.alg_cfg:
@@ -70,9 +79,14 @@ class OnPolicyRunnerSymm:
             # this is used by the symmetry function for handling different observation terms
             self.alg_cfg["symmetry_cfg"]["_env"] = env
 
+
         # init algorithm
-        alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
-        self.alg: PPO | PPOSymmDataAugmented = alg_class(policy, device=self.device, **self.alg_cfg)
+        if(self.alg_cfg["class_name"] == "PPOSymmDataAugmented"):
+            alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
+            self.alg: PPOSymmDataAugmented = alg_class(policy, device=self.device, **self.alg_cfg, **self.morphologycal_symmetries_cfg)
+        else:
+            alg_class = eval(self.alg_cfg.pop("class_name"))
+            self.alg: PPO = alg_class(policy, device=self.device, **self.alg_cfg)
 
         # store training configuration
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
