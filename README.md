@@ -20,6 +20,7 @@ To use it, you just need first to change the usual rsl_rl_ppo_cfg.py file of you
 
 If you find the work useful, please consider citing one of our works: 
 
+[Leveraging Symmetry in RL-based Legged Locomotion Control](https://arxiv.org/pdf/2403.17320):
 ```
 @inproceedings{suhuang2024leveraging,
   author={Su, Zhi and Huang, Xiaoyu and Ordoñez-Apraez, Daniel and Li, Yunfei and Li, Zhongyu and Liao, Qiayuan and Turrisi, Giulio and Pontil, Massimiliano and Semini, Claudio and Wu, Yi and Sreenath, Koushil},
@@ -31,6 +32,7 @@ If you find the work useful, please consider citing one of our works:
 }
 ```
 
+[Morphological symmetries in robotics](https://arxiv.org/pdf/2402.15552):
 ```
 @article{ordonez2025morphologicalsymmetries,
   author = {Daniel Ordoñez-Apraez and Giulio Turrisi and Vladimir Kostic and Mario Martin and Antonio Agudo and Francesc Moreno-Noguer and Massimiliano Pontil and Claudio Semini and Carlos Mastalli},
