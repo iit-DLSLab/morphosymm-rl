@@ -1,6 +1,3 @@
-[submodule "MorphoSymm"]
-	path = MorphoSymm
-	url = https://github.com/Danfoa/MorphoSymm.git
 [submodule "rsl_rl"]
 	path = rsl_rl
 	url = https://github.com/leggedrobotics/rsl_rl.git
