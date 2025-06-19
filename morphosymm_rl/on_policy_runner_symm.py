@@ -10,15 +10,15 @@ import statistics
 import time
 from collections import deque
 
-import torch
-
 import rsl_rl
-from morphosymm_rl.actor_critic_symm_equivariant_nn import ActorCriticSymmEquivariantNN
-from morphosymm_rl.ppo_symm_data_augment import PPOSymmDataAugmented
+import torch
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
 from rsl_rl.utils import store_code_state
+
+from morphosymm_rl.actor_critic_symm_equivariant_nn import ActorCriticSymmEquivariantNN
+from morphosymm_rl.ppo_symm_data_augment import PPOSymmDataAugmented
 
 
 class OnPolicyRunnerSymm:
@@ -61,7 +61,7 @@ class OnPolicyRunnerSymm:
             ).to(self.device)
 
         # resolve dimension of rnd gated state
-        if "rnd_cfg" in self.alg_cfg:
+        if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
             # check if rnd gated state is present
             rnd_state = extras["observations"].get("rnd_state")
             if rnd_state is None:
@@ -74,7 +74,7 @@ class OnPolicyRunnerSymm:
             self.alg_cfg["rnd_cfg"]["weight"] *= env.dt
 
         # if using symmetry then pass the environment config object
-        if "symmetry_cfg" in self.alg_cfg:
+        if "symmetry_cfg" in self.alg_cfg and self.alg_cfg["symmetry_cfg"] is not None:
             # this is used by the symmetry function for handling different observation terms
             self.alg_cfg["symmetry_cfg"]["_env"] = env
 

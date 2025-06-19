@@ -1,5 +1,6 @@
 {
     "python.analysis.extraPaths": [
-        "./rsl_rl"
+        "/home/danfoa/anaconda3/envs/ms-rl/lib/python3.10/site-packages/isaaclab",
+        "/home/danfoa/anaconda3/envs/ms-rl/lib/python3.10/site-packages/isaaclab/source",
     ]
 }

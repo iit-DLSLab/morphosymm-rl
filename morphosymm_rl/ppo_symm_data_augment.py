@@ -9,10 +9,10 @@ import torch.optim as optim
 from escnn.nn import FieldType
 from hydra import compose, initialize
 from hydra.core.global_hydra import GlobalHydra
-
-from morphosymm_rl.symm_utils import configure_observation_space_representations
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
+
+from morphosymm_rl.symm_utils import configure_observation_space_representations
 
 
 class PPOSymmDataAugmented:
