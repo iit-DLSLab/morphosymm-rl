@@ -18,9 +18,7 @@ import cli_args  # isort: skip
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
-parser.add_argument(
-    "--video", action="store_true", default=False, help="Record videos during training."
-)
+parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument(
     "--video_length",
     type=int,
@@ -33,16 +31,10 @@ parser.add_argument(
     default=2000,
     help="Interval between video recordings (in steps).",
 )
-parser.add_argument(
-    "--num_envs", type=int, default=None, help="Number of environments to simulate."
-)
+parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
-parser.add_argument(
-    "--seed", type=int, default=None, help="Seed used for the environment"
-)
-parser.add_argument(
-    "--max_iterations", type=int, default=None, help="RL Policy training iterations."
-)
+parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
+parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -62,17 +54,13 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-import gymnasium as gym
 import os
-import torch
 from datetime import datetime
 
-# from rsl_rl.runners import OnPolicyRunner
-from morphosymm_rl.on_policy_runner_symm import (
-    OnPolicyRunnerSymm as OnPolicyRunner,
-)
-
-
+import gymnasium as gym
+import isaaclab_tasks  # noqa: F401
+import quadruped_rl_collection.tasks  # noqa: F401
+import torch
 from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
@@ -80,7 +68,6 @@ from isaaclab.envs import (
     ManagerBasedRLEnvCfg,
     multi_agent_to_single_agent,
 )
-
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_pickle, dump_yaml
 from isaaclab_rl.rsl_rl import (
@@ -92,8 +79,10 @@ from isaaclab_rl.rsl_rl import (
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-import isaaclab_tasks  # noqa: F401
-import quadruped_rl_collection.tasks  # noqa: F401
+# from rsl_rl.runners import OnPolicyRunner
+from morphosymm_rl.on_policy_runner_symm import (
+    OnPolicyRunnerSymm as OnPolicyRunner,
+)
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -109,21 +98,15 @@ def main(
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
-    env_cfg.scene.num_envs = (
-        args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
-    )
+    env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
-        args_cli.max_iterations
-        if args_cli.max_iterations is not None
-        else agent_cfg.max_iterations
+        args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
-    env_cfg.sim.device = (
-        args_cli.device if args_cli.device is not None else env_cfg.sim.device
-    )
+    env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -138,9 +121,7 @@ def main(
     log_dir = os.path.join(log_root_path, log_dir)
 
     # create isaac environment
-    env = gym.make(
-        args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None
-    )
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
@@ -148,9 +129,7 @@ def main(
 
     # save resume path before creating a new log_dir
     if agent_cfg.resume:
-        resume_path = get_checkpoint_path(
-            log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint
-        )
+        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
     # wrap for video recording
     if args_cli.video:
@@ -168,9 +147,7 @@ def main(
     env = RslRlVecEnvWrapper(env)
 
     # create runner from rsl-rl
-    runner = OnPolicyRunner(
-        env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device
-    )
+    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
@@ -186,14 +163,10 @@ def main(
     dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
 
     # run training
-    runner.learn(
-        num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True
-    )
+    runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
     # Export policy as jit/onnx
-    resume_path = get_checkpoint_path(
-        log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint
-    )
+    resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
     runner.load(resume_path)
     # obtain the trained policy for inference
     policy = runner.get_inference_policy(device=env.unwrapped.device)
@@ -202,12 +175,8 @@ def main(
 
     # Convert Equivariant modules into standard torch modules.
     policy = runner.alg.policy.export()
-    export_policy_as_jit(
-        policy, runner.obs_normalizer, path=ckpt_path, filename="policy.pt"
-    )
-    export_policy_as_onnx(
-        policy, normalizer=runner.obs_normalizer, path=ckpt_path, filename="policy.onnx"
-    )
+    export_policy_as_jit(policy, runner.obs_normalizer, path=ckpt_path, filename="policy.pt")
+    export_policy_as_onnx(policy, normalizer=runner.obs_normalizer, path=ckpt_path, filename="policy.onnx")
 
     # close the simulator
     env.close()
