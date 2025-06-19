@@ -5,10 +5,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 from escnn.nn import EquivariantModule, FieldType, GeometricTensor
+from rsl_rl.modules.actor_critic import ActorCritic
 from torch.distributions import Normal
 
 from morphosymm_rl.symm_utils import configure_observation_space_representations
-from rsl_rl.rsl_rl.modules.actor_critic import ActorCritic
 
 G = None
 

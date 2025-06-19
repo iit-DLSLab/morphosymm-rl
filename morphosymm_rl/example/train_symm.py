@@ -2,10 +2,10 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-
-"""Script to train RL agent with RSL-RL."""
-
-"""Launch Isaac Sim Simulator first."""
+#
+# Script to train RL agent with RSL-RL.
+#
+# Launch Isaac Sim Simulator first.
 
 import argparse
 import sys
@@ -80,9 +80,7 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # from rsl_rl.runners import OnPolicyRunner
-from morphosymm_rl.on_policy_runner_symm import (
-    OnPolicyRunnerSymm as OnPolicyRunner,
-)
+from morphosymm_rl.on_policy_runner_symm import OnPolicyRunnerSymm
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -147,7 +145,7 @@ def main(
     env = RslRlVecEnvWrapper(env)
 
     # create runner from rsl-rl
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    runner = OnPolicyRunnerSymm(env=env, train_cfg=agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint

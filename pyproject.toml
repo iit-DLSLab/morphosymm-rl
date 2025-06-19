@@ -8,7 +8,7 @@ version = "0.1.0"
 
 description = "Extension of RSL-RL for using Morphological Symmetries in IsaacLab"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python ="==3.10"   # Isaacsim 4.5.0 constraint. 
 authors = [
   { name = "Giulio Turrisi", email = "giulio.turrisi@iit.it" },
   { name = "Daniel Felipe Ordoñez Apraez", email = "daniel.ordonez@iit.it" },
@@ -19,11 +19,17 @@ maintainers = [
 ]
 # Dependencies ___________________________________________________________________________________________________
 dependencies = [
-  "torch", 
+  "torch==2.5.1",                       # Isaacsim requested version https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html
+  "torchvision==0.20.1",                # Isaacsim requested version https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html
+  "isaacsim[all,extscache]==4.5.0",
   "isaaclab",
-  "morpho-symm", 
+  "rsl-rl-lib==2.3.1",
+  "morpho-symm[pin]",                   # We require pinnochio for custom joint orderings. 
   "symm-learning",
   ]
+
+# Packages _______________________________________________________________________________________________________
+packages = [{ include = "morphosymm_rl" }]
 
 # Optional dependencies ___________________________________________________________________________________________
 [project.optional-dependencies]
@@ -85,6 +91,7 @@ ignore = [
   "D405", # Allow non-imperative mood in docstring section names
   "D415", # Allow docstrings to end without a period
   "E701", # Allow multiple statements on one line (colon)
+  "E402", # Fuckedup input orders due to IsaacSim
   "D100", # Ignore missing docstring in public module
   "F401", # Don't remove unused imports
   "D107", # Document __init__ arguments inside class docstring
