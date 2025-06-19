@@ -1,0 +1,126 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "morphosymm-rl"
+version = "0.1.0"
+
+description = "Extension of RSL-RL for using Morphological Symmetries in IsaacLab"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+  { name = "Giulio Turrisi", email = "giulio.turrisi@iit.it" },
+  { name = "Daniel Felipe Ordoñez Apraez", email = "daniel.ordonez@iit.it" },
+]
+maintainers = [
+  { name = "Giulio Turrisi", email = "giulio.turrisi@iit.it" },
+  { name = "Daniel Felipe Ordoñez Apraez", email = "daniel.ordonez@iit.it" },
+]
+# Dependencies ___________________________________________________________________________________________________
+dependencies = [
+  "torch", 
+  "isaaclab",
+  "morpho-symm", 
+  "symm-learning",
+  ]
+
+# Optional dependencies ___________________________________________________________________________________________
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "pre-commit"]
+
+# RUFF ___________________________________________________________________________________________________________
+[tool.ruff] # ============================================================================================
+line-length = 120
+
+exclude = [
+  ".bzr",
+  ".direnv",
+  ".eggs",
+  ".git",
+  ".git-rewrite",
+  ".hg",
+  ".ipynb_checkpoints",
+  ".mypy_cache",
+  ".nox",
+  ".pants.d",
+  ".pyenv",
+  ".pytest_cache",
+  ".pytype",
+  ".ruff_cache",
+  ".svn",
+  ".tox",
+  ".venv",
+  ".vscode",
+  "__pypackages__",
+  "_build",
+  "buck-out",
+  "build",
+  "dist",
+  "node_modules",
+  "site-packages",
+  "venv",
+  "rsl_rl",
+]
+
+[tool.ruff.lint] # ===============================================================================
+pydocstyle.convention = "google"
+
+# Enable specific linting rules
+select = [
+  "F", # pyflakes: general code quality checks
+  "E", # pycodestyle: PEP8 error checks
+  #  "W",    # pycodestyle: PEP8 warning checks
+  "I",   # isort: import sorting checks
+  "D",   # pydocstyle: docstring style checks,
+  "FA",  # Future annotations
+  "ISC", # String concat
+  "ICN", # Import conventions
+  "SIM", # flake8-simplify
+]
+
+# Ignore specific linting rules
+ignore = [
+  "D401", # Allow any docstring to start with a capital letter, not just "This"
+  "D405", # Allow non-imperative mood in docstring section names
+  "D415", # Allow docstrings to end without a period
+  "E701", # Allow multiple statements on one line (colon)
+  "D100", # Ignore missing docstring in public module
+  "F401", # Don't remove unused imports
+  "D107", # Document __init__ arguments inside class docstring
+]
+
+# Exclude specific directories from linting
+exclude = [
+  ".git",    # Git version control directory
+  ".idea",   # PyCharm project settings directory
+  ".venv",   # Virtual environment directory
+  ".vscode",
+]
+
+[tool.ruff.format] # ===============================================================================
+exclude = ["*.pyi"]
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
+# Pypi build configuration._________________________________________________________________________
+[tool.hatch.build] # ===============================================================================
+include = [
+  "symm_learning/**", # Only include necessary package files
+]
+exclude = [
+  ".github/**",     # Exclude GitHub workflows
+  ".git/**",
+  ".idea/**",
+  "tests/**",       # Exclude test files
+  "*.log",          # Exclude log files
+  "*.zip",
+  "*.tar.gz",       # Exclude compressed files
+  "*.h5",           # Exclude large data files
+  "*.mat",          # Exclude large data files
+  "*.pkl",          # Exclude pickle files
+  "__pycache__/**", # Exclude Python cache files
+  "rsl_rl/**",      # Exclude RSL-RL package files
+]

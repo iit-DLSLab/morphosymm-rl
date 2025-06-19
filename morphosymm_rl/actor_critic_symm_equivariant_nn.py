@@ -1,16 +1,14 @@
 # Add reference to paper
 
-import numpy as np
-
 import escnn
-from escnn.nn import FieldType, EquivariantModule, GeometricTensor
-
-from rsl_rl.rsl_rl.modules.actor_critic import ActorCritic
-from morphosymm_rl.symm_utils import configure_observation_space_representations
-
+import numpy as np
 import torch
 import torch.nn as nn
+from escnn.nn import EquivariantModule, FieldType, GeometricTensor
 from torch.distributions import Normal
+
+from morphosymm_rl.symm_utils import configure_observation_space_representations
+from rsl_rl.rsl_rl.modules.actor_critic import ActorCritic
 
 G = None
 
@@ -41,17 +39,14 @@ class ActorCriticSymmEquivariantNN(ActorCritic):
             noise_std_type=noise_std_type,
         )
 
-
         # MorphoSymm components
-        obs_space_names = morphologycal_symmetries_cfg["obs_space_names"] 
+        obs_space_names = morphologycal_symmetries_cfg["obs_space_names"]
         action_space_names = morphologycal_symmetries_cfg["action_space_names"]
         joints_order = morphologycal_symmetries_cfg["joints_order"]
         history_length = morphologycal_symmetries_cfg["history_length"]
         robot_name = morphologycal_symmetries_cfg["robot_name"]
 
-        G, obs_reps = configure_observation_space_representations(
-            robot_name, obs_space_names, joints_order
-        )
+        G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names, joints_order)
 
         obs_space_reps = [obs_reps[n] for n in obs_space_names] * history_length
         act_space_reps = [obs_reps[n] for n in action_space_names]
@@ -102,13 +97,9 @@ class ActorCriticSymmEquivariantNN(ActorCritic):
         if self.noise_std_type == "scalar":
             self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         elif self.noise_std_type == "log":
-            self.log_std = nn.Parameter(
-                torch.log(init_noise_std * torch.ones(num_actions))
-            )
+            self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
         else:
-            raise ValueError(
-                f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
-            )
+            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
 
         # Action distribution (populated in update_distribution)
         self.distribution = None
@@ -126,9 +117,7 @@ class ActorCriticSymmEquivariantNN(ActorCritic):
         elif self.noise_std_type == "log":
             std = torch.exp(self.log_std).expand_as(mean)
         else:
-            raise ValueError(
-                f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
-            )
+            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         # create distribution
         self.distribution = Normal(mean, std)
 
@@ -144,7 +133,6 @@ class ActorCriticSymmEquivariantNN(ActorCritic):
 
     def export(self):
         """Export the acto-critic model as a torch.module with no Equivariant submodules."""
-
         torch_ac = ActorCritic(
             num_actor_obs=self.in_field_type.size,
             num_critic_obs=self.critic_in_field_type.size,
@@ -187,9 +175,7 @@ class SimpleEMLP(EquivariantModule):
                 f"linear_{n}: in={layer_in_type.size}-out={layer_out_type.size}",
                 escnn.nn.Linear(layer_in_type, layer_out_type, bias=bias),
             )
-            self.net.add_module(
-                f"act_{n}", self.get_activation(activation, layer_out_type)
-            )
+            self.net.add_module(f"act_{n}", self.get_activation(activation, layer_out_type))
 
             layer_in_type = layer_out_type
 
@@ -201,9 +187,7 @@ class SimpleEMLP(EquivariantModule):
             self.extra_layer = None
         else:
             num_inv_features = len(layer_in_type.irreps)
-            self.extra_layer = torch.nn.Linear(
-                num_inv_features, out_type.size, bias=False
-            )
+            self.extra_layer = torch.nn.Linear(num_inv_features, out_type.size, bias=False)
 
     def forward(self, x: GeometricTensor) -> GeometricTensor:
         """Forward pass through the equivariant MLP."""

@@ -1,19 +1,19 @@
 # Add reference to paper
 
+import warnings
+
+import escnn
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import warnings
+from escnn.nn import FieldType
+from hydra import compose, initialize
+from hydra.core.global_hydra import GlobalHydra
 
+from morphosymm_rl.symm_utils import configure_observation_space_representations
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
 
-from morphosymm_rl.symm_utils import configure_observation_space_representations
-import escnn
-from escnn.nn import FieldType
-
-from hydra.core.global_hydra import GlobalHydra
-from hydra import compose, initialize
 
 class PPOSymmDataAugmented:
     """Proximal Policy Optimization algorithm with data augmentation via symmetries."""
@@ -73,12 +73,11 @@ class PPOSymmDataAugmented:
         self.symmetry = None
 
         # MorphoSymm components
-        obs_space_names = morphologycal_symmetries_cfg["obs_space_names"] 
+        obs_space_names = morphologycal_symmetries_cfg["obs_space_names"]
         action_space_names = morphologycal_symmetries_cfg["action_space_names"]
         joints_order = morphologycal_symmetries_cfg["joints_order"]
         history_length = morphologycal_symmetries_cfg["history_length"]
         robot_name = morphologycal_symmetries_cfg["robot_name"]
-        
 
         G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names, joints_order)
 
@@ -143,8 +142,7 @@ class PPOSymmDataAugmented:
         # Bootstrapping on time outs
         if "time_outs" in infos:
             self.transition.rewards += self.gamma * torch.squeeze(
-                self.transition.values
-                * infos["time_outs"].unsqueeze(1).to(self.device),
+                self.transition.values * infos["time_outs"].unsqueeze(1).to(self.device),
                 1,
             )
 
@@ -163,35 +161,32 @@ class PPOSymmDataAugmented:
         critic_in_field_type = self.critic_in_field_type
         G = self.G
         t.actions = torch.cat(
-            [t.actions]
-            + [out_field_type.transform_fibers(t.actions, g) for g in G.elements[1:]],
+            [t.actions] + [out_field_type.transform_fibers(t.actions, g) for g in G.elements[1:]],
             dim=0,
         )
         t.actions_log_prob = torch.cat([t.actions_log_prob] * self.num_replica, dim=0)
         t.action_mean = torch.cat(
-            [t.action_mean]
-            + [
-                out_field_type.transform_fibers(t.action_mean, g)
-                for g in G.elements[1:]
-            ],
+            [t.action_mean] + [out_field_type.transform_fibers(t.action_mean, g) for g in G.elements[1:]],
             dim=0,
         )
         t.action_sigma = torch.abs(
             torch.cat(
-                [t.action_sigma]
-                + [
-                    out_field_type.transform_fibers(t.action_sigma, g)
-                    for g in G.elements[1:]
-                ],
+                [t.action_sigma] + [out_field_type.transform_fibers(t.action_sigma, g) for g in G.elements[1:]],
                 dim=0,
             )
         )
         t.values = torch.cat([t.values] * self.num_replica, dim=0)
         t.rewards = torch.cat([t.rewards] * self.num_replica, dim=0)
         t.dones = torch.cat([t.dones] * self.num_replica, dim=0)
-        t.observations = torch.cat([t.observations] + [in_field_type.transform_fibers(t.observations, g) for g in G.elements[1:]], dim=0,)
-        t.privileged_observations = torch.cat([t.privileged_observations] + [critic_in_field_type.transform_fibers(t.privileged_observations, g) for g in G.elements[1:]], dim=0,)
-        
+        t.observations = torch.cat(
+            [t.observations] + [in_field_type.transform_fibers(t.observations, g) for g in G.elements[1:]],
+            dim=0,
+        )
+        t.privileged_observations = torch.cat(
+            [t.privileged_observations]
+            + [critic_in_field_type.transform_fibers(t.privileged_observations, g) for g in G.elements[1:]],
+            dim=0,
+        )
 
     def augment_values(self, values):
         values = torch.cat([values] * self.num_replica, dim=0)
@@ -216,13 +211,9 @@ class PPOSymmDataAugmented:
 
         # generator for mini batches
         if self.policy.is_recurrent:
-            generator = self.storage.recurrent_mini_batch_generator(
-                self.num_mini_batches, self.num_learning_epochs
-            )
+            generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
-            generator = self.storage.mini_batch_generator(
-                self.num_mini_batches, self.num_learning_epochs
-            )
+            generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
 
         # iterate over batches
         for (
@@ -248,23 +239,15 @@ class PPOSymmDataAugmented:
             # check if we should normalize advantages per mini batch
             if self.normalize_advantage_per_mini_batch:
                 with torch.no_grad():
-                    advantages_batch = (advantages_batch - advantages_batch.mean()) / (
-                        advantages_batch.std() + 1e-8
-                    )
+                    advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
 
             # Recompute actions log prob and entropy for current batch of transitions
             # Note: we need to do this because we updated the policy with the new parameters
             # -- actor
-            self.policy.act(
-                obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0]
-            )
-            actions_log_prob_batch = self.policy.get_actions_log_prob(
-                actions_batch
-            )
+            self.policy.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+            actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
             # -- critic
-            value_batch = self.policy.evaluate(
-                critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1]
-            )
+            value_batch = self.policy.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
             # -- entropy
             # we only keep the entropy of the first augmentation (the original one)
             mu_batch = self.policy.action_mean[:original_batch_size]
@@ -276,10 +259,7 @@ class PPOSymmDataAugmented:
                 with torch.inference_mode():
                     kl = torch.sum(
                         torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
-                        + (
-                            torch.square(old_sigma_batch)
-                            + torch.square(old_mu_batch - mu_batch)
-                        )
+                        + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch))
                         / (2.0 * torch.square(sigma_batch))
                         - 0.5,
                         axis=-1,
@@ -295,9 +275,7 @@ class PPOSymmDataAugmented:
                         param_group["lr"] = self.learning_rate
 
             # Surrogate loss
-            ratio = torch.exp(
-                actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch)
-            )
+            ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
             surrogate = -torch.squeeze(advantages_batch) * ratio
             surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
                 ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
@@ -306,20 +284,16 @@ class PPOSymmDataAugmented:
 
             # Value function loss
             if self.use_clipped_value_loss:
-                value_clipped = target_values_batch + (
-                    value_batch - target_values_batch
-                ).clamp(-self.clip_param, self.clip_param)
+                value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(
+                    -self.clip_param, self.clip_param
+                )
                 value_losses = (value_batch - returns_batch).pow(2)
                 value_losses_clipped = (value_clipped - returns_batch).pow(2)
                 value_loss = torch.max(value_losses, value_losses_clipped).mean()
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
-            loss = (
-                surrogate_loss
-                + self.value_loss_coef * value_loss
-                - self.entropy_coef * entropy_batch.mean()
-            )
+            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
             # Random Network Distillation loss
             if self.rnd:
@@ -372,7 +346,7 @@ class PPOSymmDataAugmented:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
-        
+
         return loss_dict
 
-        #return mean_value_loss, mean_surrogate_loss, mean_entropy, mean_rnd_loss, None
+        # return mean_value_loss, mean_surrogate_loss, mean_entropy, mean_rnd_loss, None
