@@ -8,7 +8,7 @@ version = "0.1.0"
 
 description = "Extension of RSL-RL for using Morphological Symmetries in IsaacLab"
 readme = "README.md"
-requires-python ="==3.10"   # Isaacsim 4.5.0 constraint. 
+requires-python = ">=3.10"   # Isaacsim 4.5.0 constraint. 
 authors = [
   { name = "Giulio Turrisi", email = "giulio.turrisi@iit.it" },
   { name = "Daniel Felipe Ordoñez Apraez", email = "daniel.ordonez@iit.it" },
@@ -103,6 +103,7 @@ exclude = [
   ".idea",   # PyCharm project settings directory
   ".venv",   # Virtual environment directory
   ".vscode",
+  "**/site-packages/**", # This is important if you're using editable installs
 ]
 
 [tool.ruff.format] # ===============================================================================

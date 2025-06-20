@@ -34,7 +34,7 @@ class OnPolicyRunnerSymm:
         self.morphologycal_symmetries_cfg = train_cfg["morphologycal_symmetries_cfg"]
 
         # resolve training type depending on the algorithm
-        if self.alg_cfg["class_name"] == "PPO" or self.alg_cfg["class_name"] == "PPOSymmDataAugmented":
+        if "PPO" in self.alg_cfg["class_name"]:
             self.training_type = "rl"
         elif self.alg_cfg["class_name"] == "Distillation":
             self.training_type = "distillation"
@@ -44,10 +44,7 @@ class OnPolicyRunnerSymm:
         # resolve dimensions of observations
         obs, extras = self.env.get_observations()
         num_obs = obs.shape[1]
-        if "critic" in extras["observations"]:
-            num_critic_obs = extras["observations"]["critic"].shape[1]
-        else:
-            num_critic_obs = num_obs
+        num_critic_obs = extras["observations"]["critic"].shape[1] if "critic" in extras["observations"] else num_obs
 
         if self.policy_cfg["class_name"] == "ActorCriticSymmEquivariantNN":
             policy_class = eval(self.policy_cfg.pop("class_name"))
