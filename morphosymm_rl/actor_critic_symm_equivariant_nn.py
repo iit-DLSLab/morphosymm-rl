@@ -13,7 +13,7 @@ from morphosymm_rl.symm_utils import configure_observation_space_representations
 G = None
 
 
-class ActorCriticSymmEquivariantNN(ActorCritic):
+class SymmActorCritic(ActorCritic):
     is_recurrent = False
 
     def __init__(

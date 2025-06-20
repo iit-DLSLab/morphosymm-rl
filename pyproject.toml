@@ -66,7 +66,7 @@ exclude = [
   "node_modules",
   "site-packages",
   "venv",
-  "rsl_rl",
+  "basic_locomotion_dls_isaaclab",
 ]
 
 [tool.ruff.lint] # ===============================================================================

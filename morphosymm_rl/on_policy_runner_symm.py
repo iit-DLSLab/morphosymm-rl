@@ -17,7 +17,7 @@ from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
 from rsl_rl.utils import store_code_state
 
-from morphosymm_rl.actor_critic_symm_equivariant_nn import ActorCriticSymmEquivariantNN
+from morphosymm_rl.actor_critic_symm_equivariant_nn import SymmActorCritic
 from morphosymm_rl.ppo_symm_data_augment import PPOSymmDataAugmented
 
 
@@ -46,9 +46,9 @@ class OnPolicyRunnerSymm:
         num_obs = obs.shape[1]
         num_critic_obs = extras["observations"]["critic"].shape[1] if "critic" in extras["observations"] else num_obs
 
-        if self.policy_cfg["class_name"] == "ActorCriticSymmEquivariantNN":
+        if self.policy_cfg["class_name"] == "SymmActorCritic":
             policy_class = eval(self.policy_cfg.pop("class_name"))
-            policy: ActorCriticSymmEquivariantNN = policy_class(
+            policy: SymmActorCritic = policy_class(
                 num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg, **self.morphologycal_symmetries_cfg
             ).to(self.device)
         else:

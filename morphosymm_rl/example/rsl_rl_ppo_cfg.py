@@ -36,7 +36,7 @@ class AliengoFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "aliengo_flat_direct"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
-        class_name="ActorCriticSymmEquivariantNN",  # ActorCritic, ActorCriticRecurrent, ActorCriticSymmEquivariantNN
+        class_name="SymmActorCritic",  # ActorCritic, ActorCriticRecurrent, SymmActorCritic,
         init_noise_std=1.0,
         actor_hidden_dims=[128, 128, 128],
         critic_hidden_dims=[128, 128, 128],
