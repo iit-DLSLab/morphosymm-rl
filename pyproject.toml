@@ -29,7 +29,8 @@ dependencies = [
   ]
 
 # Packages _______________________________________________________________________________________________________
-packages = [{ include = "morphosymm_rl" }]
+[tool.hatch.build.targets.wheel]
+packages = ["morphosymm_rl"]
 
 # Optional dependencies ___________________________________________________________________________________________
 [project.optional-dependencies]
