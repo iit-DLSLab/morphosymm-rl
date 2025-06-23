@@ -91,6 +91,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # from rsl_rl.runners import OnPolicyRunner
 from morphosymm_rl.on_policy_runner_symm import OnPolicyRunnerSymm
+import escnn.nn
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -182,7 +183,7 @@ def main(
     ckpt_path = os.path.join(os.path.dirname(resume_path), "exported")
 
     # Convert Equivariant modules into standard torch modules.
-    policy = runner.alg.policy.export()
+    policy = runner.alg.policy.export() if hasattr(runner.alg.policy, "export") else runner.alg.policy
     export_policy_as_jit(policy, runner.obs_normalizer, path=ckpt_path, filename="policy.pt")
     export_policy_as_onnx(policy, normalizer=runner.obs_normalizer, path=ckpt_path, filename="policy.onnx")
 

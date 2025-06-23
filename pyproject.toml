@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "morphosymm-rl"
-version = "0.1.0"
+version = "0.1.1"
 
 description = "Extension of RSL-RL for using Morphological Symmetries in IsaacLab"
 readme = "README.md"
@@ -26,14 +26,8 @@ dependencies = [
   "rsl-rl-lib==2.3.1",
   "morpho-symm[pin]",                   # We require pinnochio for custom joint orderings. 
   "symm-learning",
+  "gym-quadruped"
   ]
-
-# Packages _______________________________________________________________________________________________________
-packages = [{ include = "morphosymm_rl" }]
-
-# Optional dependencies ___________________________________________________________________________________________
-[project.optional-dependencies]
-dev = ["pytest", "ruff", "pre-commit"]
 
 # RUFF ___________________________________________________________________________________________________________
 [tool.ruff] # ============================================================================================
@@ -66,7 +60,7 @@ exclude = [
   "node_modules",
   "site-packages",
   "venv",
-  "basic_locomotion_dls_isaaclab",
+  # "basic_locomotion_dls_isaaclab",
 ]
 
 [tool.ruff.lint] # ===============================================================================
@@ -116,7 +110,7 @@ docstring-code-line-length = "dynamic"
 # Pypi build configuration._________________________________________________________________________
 [tool.hatch.build] # ===============================================================================
 include = [
-  "symm_learning/**", # Only include necessary package files
+  "morphosymm_rl/**", # Only include necessary package files
 ]
 exclude = [
   ".github/**",     # Exclude GitHub workflows
@@ -131,4 +125,5 @@ exclude = [
   "*.pkl",          # Exclude pickle files
   "__pycache__/**", # Exclude Python cache files
   "rsl_rl/**",      # Exclude RSL-RL package files
+  "basic-locomotion-dls-isaaclab/**", # Exclude basic locomotion package files
 ]
