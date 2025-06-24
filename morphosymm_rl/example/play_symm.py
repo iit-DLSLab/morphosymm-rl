@@ -47,7 +47,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, expor
 from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 
 # from rsl_rl.runners import on_policy_runner
-from morphosymm_rl.on_policy_runner_symm import OnPolicyRunnerSymm as OnPolicyRunner
+from morphosymm_rl.symm_on_policy_runner import SymmOnPolicyRunner as OnPolicyRunner
 
 
 def main():

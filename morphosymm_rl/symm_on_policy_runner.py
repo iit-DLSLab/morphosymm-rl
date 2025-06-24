@@ -17,11 +17,11 @@ from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
 from rsl_rl.utils import store_code_state
 
-from morphosymm_rl.actor_critic_symm_equivariant_nn import SymmActorCritic
+from morphosymm_rl.symm_actor_critic import SymmActorCritic
 from morphosymm_rl.ppo_symm_data_augment import PPOSymmDataAugmented
 
 
-class OnPolicyRunnerSymm:
+class SymmOnPolicyRunner:
     """On-policy runner for training and evaluation."""
 
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device="cpu"):

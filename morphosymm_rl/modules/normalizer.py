@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import symm_learning.stats as symm_stats
 import torch
 from escnn.group import Representation
 from rsl_rl.modules.normalizer import EmpiricalNormalization
-from symm_learning.stats import invariant_orthogonal_projector, var_mean
 
 
 class EquivEmpiricalNormalization(EmpiricalNormalization):
@@ -20,7 +20,6 @@ class EquivEmpiricalNormalization(EmpiricalNormalization):
         """
         super().__init__()
         self.rep = rep
-        self.inv_space_projector = invariant_orthogonal_projector(rep)
         self.eps = eps
         self.until = until
         self.register_buffer("_mean", torch.zeros(self.rep.size).unsqueeze(0))
@@ -52,7 +51,7 @@ class EquivEmpiricalNormalization(EmpiricalNormalization):
         self.count += count_x
         rate = count_x / self.count
 
-        var_x, mean_x = var_mean(x, self.rep)
+        var_x, mean_x = symm_stats.var_mean(x, self.rep)
         delta_mean = mean_x - self._mean
         self._mean += rate * delta_mean
         self._var += rate * (var_x - self._var + delta_mean * (mean_x - self._mean))

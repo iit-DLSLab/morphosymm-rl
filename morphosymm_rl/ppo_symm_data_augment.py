@@ -11,7 +11,7 @@ from hydra import compose, initialize
 from hydra.core.global_hydra import GlobalHydra
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
-
+from rsl_rl.algorithms import PPO
 from morphosymm_rl.symm_utils import configure_observation_space_representations
 
 
@@ -317,6 +317,11 @@ class PPOSymmDataAugmented:
                 self.rnd_optimizer.step()
 
             # Store the losses
+            # Check that no loss is NaN
+            assert not torch.isnan(value_loss), "Loss is NaN"
+            assert not torch.isnan(surrogate_loss), "Surrogate loss is NaN"
+            assert not torch.isnan(entropy_batch.mean()), "Entropy loss is NaN"
+
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()

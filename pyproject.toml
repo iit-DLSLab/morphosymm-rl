@@ -25,7 +25,7 @@ dependencies = [
   "isaaclab",
   "rsl-rl-lib==2.3.1",
   "morpho-symm[pin]",                   # We require pinnochio for custom joint orderings. 
-  "symm-learning",
+  "symm-learning>=0.2.5", 
   "gym-quadruped"
   ]
 

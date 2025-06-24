@@ -90,7 +90,7 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # from rsl_rl.runners import OnPolicyRunner
-from morphosymm_rl.on_policy_runner_symm import OnPolicyRunnerSymm
+from morphosymm_rl.symm_on_policy_runner import SymmOnPolicyRunner
 import escnn.nn
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -156,7 +156,7 @@ def main(
     env = RslRlVecEnvWrapper(env)
 
     # create runner from rsl-rl
-    runner = OnPolicyRunnerSymm(env=env, train_cfg=agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    runner = SymmOnPolicyRunner(env=env, train_cfg=agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
