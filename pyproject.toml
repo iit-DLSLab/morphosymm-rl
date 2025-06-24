@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "morphosymm-rl"
-version = "0.1.1"
+version = "0.1.2"
 
 description = "Extension of RSL-RL for using Morphological Symmetries in IsaacLab"
 readme = "README.md"
