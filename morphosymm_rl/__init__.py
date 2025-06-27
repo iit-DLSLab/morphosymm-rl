@@ -5,6 +5,6 @@
 
 """Implementation of runners for environment-agent interaction."""
 
-from .on_policy_runner_symm import OnPolicyRunnerSymm
+from .symm_on_policy_runner import SymmOnPolicyRunner
 
-__all__ = ["OnPolicyRunnerSymm"]
+__all__ = ["SymmOnPolicyRunner"]

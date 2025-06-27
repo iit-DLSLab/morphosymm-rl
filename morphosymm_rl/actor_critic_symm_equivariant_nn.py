@@ -5,7 +5,7 @@ import numpy as np
 import escnn
 from escnn.nn import FieldType, EquivariantModule, GeometricTensor
 
-from rsl_rl.rsl_rl.modules.actor_critic import ActorCritic
+from rsl_rl.modules.actor_critic import ActorCritic
 from morphosymm_rl.symm_utils import configure_observation_space_representations
 
 import torch

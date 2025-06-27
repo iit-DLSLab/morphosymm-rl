@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "morphosymm-rl"
-version = "0.1.0"
+version = "0.1.2"
 
 description = "Extension of RSL-RL for using Morphological Symmetries in IsaacLab"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"   # Isaacsim 4.5.0 constraint. 
 authors = [
   { name = "Giulio Turrisi", email = "giulio.turrisi@iit.it" },
   { name = "Daniel Felipe Ordoñez Apraez", email = "daniel.ordonez@iit.it" },
@@ -19,16 +19,19 @@ maintainers = [
 ]
 # Dependencies ___________________________________________________________________________________________________
 dependencies = [
-  "torch", 
+  "torch==2.5.1",                       # Isaacsim requested version https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html
+  "torchvision==0.20.1",                # Isaacsim requested version https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html
+  "isaacsim[all,extscache]==4.5.0",
   "isaaclab",
-  "morpho-symm", 
-  "symm-learning",
+  "rsl-rl-lib==2.3.3",
+  "morpho-symm[pin]",                   # We require pinnochio for custom joint orderings. 
+  "symm-learning>=0.2.5", 
+  "gym-quadruped"
   ]
 
-# Optional dependencies ___________________________________________________________________________________________
+# Optional dependencies __________________________________________________________________________________________
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "pre-commit"]
-
 # RUFF ___________________________________________________________________________________________________________
 [tool.ruff] # ============================================================================================
 line-length = 120
@@ -60,7 +63,7 @@ exclude = [
   "node_modules",
   "site-packages",
   "venv",
-  "rsl_rl",
+  # "basic_locomotion_dls_isaaclab",
 ]
 
 [tool.ruff.lint] # ===============================================================================
@@ -85,6 +88,7 @@ ignore = [
   "D405", # Allow non-imperative mood in docstring section names
   "D415", # Allow docstrings to end without a period
   "E701", # Allow multiple statements on one line (colon)
+  "E402", # Fuckedup input orders due to IsaacSim
   "D100", # Ignore missing docstring in public module
   "F401", # Don't remove unused imports
   "D107", # Document __init__ arguments inside class docstring
@@ -96,6 +100,7 @@ exclude = [
   ".idea",   # PyCharm project settings directory
   ".venv",   # Virtual environment directory
   ".vscode",
+  "**/site-packages/**", # This is important if you're using editable installs
 ]
 
 [tool.ruff.format] # ===============================================================================
@@ -108,7 +113,7 @@ docstring-code-line-length = "dynamic"
 # Pypi build configuration._________________________________________________________________________
 [tool.hatch.build] # ===============================================================================
 include = [
-  "symm_learning/**", # Only include necessary package files
+  "morphosymm_rl/**", # Only include necessary package files
 ]
 exclude = [
   ".github/**",     # Exclude GitHub workflows
@@ -123,4 +128,5 @@ exclude = [
   "*.pkl",          # Exclude pickle files
   "__pycache__/**", # Exclude Python cache files
   "rsl_rl/**",      # Exclude RSL-RL package files
+  "basic-locomotion-dls-isaaclab/**", # Exclude basic locomotion package files
 ]

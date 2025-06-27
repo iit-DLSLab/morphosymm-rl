@@ -8,20 +8,20 @@ from __future__ import annotations
 import os
 import statistics
 import time
-import torch
 from collections import deque
 
 import rsl_rl
+import torch
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
 from rsl_rl.utils import store_code_state
 
+from morphosymm_rl.symm_actor_critic import SymmActorCritic
 from morphosymm_rl.ppo_symm_data_augment import PPOSymmDataAugmented
-from morphosymm_rl.actor_critic_symm_equivariant_nn import ActorCriticSymmEquivariantNN
 
 
-class OnPolicyRunnerSymm:
+class SymmOnPolicyRunner:
     """On-policy runner for training and evaluation."""
 
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device="cpu"):
@@ -33,9 +33,8 @@ class OnPolicyRunnerSymm:
 
         self.morphologycal_symmetries_cfg = train_cfg["morphologycal_symmetries_cfg"]
 
-
         # resolve training type depending on the algorithm
-        if self.alg_cfg["class_name"] == "PPO" or self.alg_cfg["class_name"] == "PPOSymmDataAugmented":
+        if "PPO" in self.alg_cfg["class_name"]:
             self.training_type = "rl"
         elif self.alg_cfg["class_name"] == "Distillation":
             self.training_type = "distillation"
@@ -45,14 +44,11 @@ class OnPolicyRunnerSymm:
         # resolve dimensions of observations
         obs, extras = self.env.get_observations()
         num_obs = obs.shape[1]
-        if "critic" in extras["observations"]:
-            num_critic_obs = extras["observations"]["critic"].shape[1]
-        else:
-            num_critic_obs = num_obs
+        num_critic_obs = extras["observations"]["critic"].shape[1] if "critic" in extras["observations"] else num_obs
 
-        if(self.policy_cfg["class_name"] == "ActorCriticSymmEquivariantNN"):
-            policy_class = eval(self.policy_cfg.pop("class_name"))  
-            policy: ActorCriticSymmEquivariantNN = policy_class(
+        if self.policy_cfg["class_name"] == "SymmActorCritic":
+            policy_class = eval(self.policy_cfg.pop("class_name"))
+            policy: SymmActorCritic = policy_class(
                 num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg, **self.morphologycal_symmetries_cfg
             ).to(self.device)
         else:
@@ -62,7 +58,7 @@ class OnPolicyRunnerSymm:
             ).to(self.device)
 
         # resolve dimension of rnd gated state
-        if "rnd_cfg" in self.alg_cfg:
+        if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
             # check if rnd gated state is present
             rnd_state = extras["observations"].get("rnd_state")
             if rnd_state is None:
@@ -75,15 +71,16 @@ class OnPolicyRunnerSymm:
             self.alg_cfg["rnd_cfg"]["weight"] *= env.dt
 
         # if using symmetry then pass the environment config object
-        if "symmetry_cfg" in self.alg_cfg:
+        if "symmetry_cfg" in self.alg_cfg and self.alg_cfg["symmetry_cfg"] is not None:
             # this is used by the symmetry function for handling different observation terms
             self.alg_cfg["symmetry_cfg"]["_env"] = env
 
-
         # init algorithm
-        if(self.alg_cfg["class_name"] == "PPOSymmDataAugmented"):
+        if self.alg_cfg["class_name"] == "PPOSymmDataAugmented":
             alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
-            self.alg: PPOSymmDataAugmented = alg_class(policy, device=self.device, **self.alg_cfg, **self.morphologycal_symmetries_cfg)
+            self.alg: PPOSymmDataAugmented = alg_class(
+                policy, device=self.device, **self.alg_cfg, **self.morphologycal_symmetries_cfg
+            )
         else:
             alg_class = eval(self.alg_cfg.pop("class_name"))
             self.alg: PPO = alg_class(policy, device=self.device, **self.alg_cfg)
@@ -288,10 +285,10 @@ class OnPolicyRunnerSymm:
                 # log to logger and terminal
                 if "/" in key:
                     self.writer.add_scalar(key, value, locs["it"])
-                    ep_string += f"""{f'{key}:':>{pad}} {value:.4f}\n"""
+                    ep_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
                 else:
                     self.writer.add_scalar("Episode/" + key, value, locs["it"])
-                    ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
+                    ep_string += f"""{f"Mean episode {key}:":>{pad}} {value:.4f}\n"""
 
         mean_std = self.alg.policy.action_std.mean()
         fps = int(collection_size / (locs["collection_time"] + locs["learn_time"]))
@@ -329,48 +326,49 @@ class OnPolicyRunnerSymm:
 
         if len(locs["rewbuffer"]) > 0:
             log_string = (
-                f"""{'#' * width}\n"""
-                f"""{str.center(width, ' ')}\n\n"""
-                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                    'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
+                f"""{"#" * width}\n"""
+                f"""{str.center(width, " ")}\n\n"""
+                f"""{"Computation:":>{pad}} {fps:.0f} steps/s (collection: {locs["collection_time"]:.3f}s, learning {locs["learn_time"]:.3f}s)\n"""
+                f"""{"Mean action noise std:":>{pad}} {mean_std.item():.2f}\n"""
             )
             # -- Losses
             for key, value in locs["loss_dict"].items():
-                log_string += f"""{f'Mean {key} loss:':>{pad}} {value:.4f}\n"""
+                log_string += f"""{f"Mean {key} loss:":>{pad}} {value:.4f}\n"""
             # -- Rewards
             if self.alg.rnd:
                 log_string += (
-                    f"""{'Mean extrinsic reward:':>{pad}} {statistics.mean(locs['erewbuffer']):.2f}\n"""
-                    f"""{'Mean intrinsic reward:':>{pad}} {statistics.mean(locs['irewbuffer']):.2f}\n"""
+                    f"""{"Mean extrinsic reward:":>{pad}} {statistics.mean(locs["erewbuffer"]):.2f}\n"""
+                    f"""{"Mean intrinsic reward:":>{pad}} {statistics.mean(locs["irewbuffer"]):.2f}\n"""
                 )
-            log_string += f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
+            log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(locs["rewbuffer"]):.2f}\n"""
             # -- episode info
-            log_string += f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
+            log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(locs["lenbuffer"]):.2f}\n"""
         else:
             log_string = (
-                f"""{'#' * width}\n"""
-                f"""{str.center(width, ' ')}\n\n"""
-                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                    'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
+                f"""{"#" * width}\n"""
+                f"""{str.center(width, " ")}\n\n"""
+                f"""{"Computation:":>{pad}} {fps:.0f} steps/s (collection: {locs["collection_time"]:.3f}s, learning {locs["learn_time"]:.3f}s)\n"""
+                f"""{"Mean action noise std:":>{pad}} {mean_std.item():.2f}\n"""
             )
             for key, value in locs["loss_dict"].items():
-                log_string += f"""{f'{key}:':>{pad}} {value:.4f}\n"""
+                log_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
 
         log_string += ep_string
         log_string += (
-            f"""{'-' * width}\n"""
-            f"""{'Total timesteps:':>{pad}} {self.tot_timesteps}\n"""
-            f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n"""
-            f"""{'Time elapsed:':>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
-            f"""{'ETA:':>{pad}} {time.strftime(
-                "%H:%M:%S",
-                time.gmtime(
-                    self.tot_time / (locs['it'] - locs['start_iter'] + 1)
-                    * (locs['start_iter'] + locs['num_learning_iterations'] - locs['it'])
+            f"""{"-" * width}\n"""
+            f"""{"Total timesteps:":>{pad}} {self.tot_timesteps}\n"""
+            f"""{"Iteration time:":>{pad}} {iteration_time:.2f}s\n"""
+            f"""{"Time elapsed:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
+            f"""{"ETA:":>{pad}} {
+                time.strftime(
+                    "%H:%M:%S",
+                    time.gmtime(
+                        self.tot_time
+                        / (locs["it"] - locs["start_iter"] + 1)
+                        * (locs["start_iter"] + locs["num_learning_iterations"] - locs["it"])
+                    ),
                 )
-            )}\n"""
+            }\n"""
         )
         print(log_string)
 
@@ -416,15 +414,15 @@ class OnPolicyRunnerSymm:
                 self.alg.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
         # -- Load current learning iteration
         self.current_learning_iteration = loaded_dict["iter"]
-        return loaded_dict["infos"]"""
-        self.alg.policy.eval() # switch to evaluation mode (dropout for example)
+        return loaded_dict["infos"]
+        """
+        self.alg.policy.eval()  # switch to evaluation mode (dropout for example)
         loaded_dict = torch.load(path, map_location=self.device)
-        self.alg.policy.load_state_dict(loaded_dict['model_state_dict'], strict=False)
+        self.alg.policy.load_state_dict(loaded_dict["model_state_dict"], strict=False)
         # if load_optimizer:
         #     self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
-        self.current_learning_iteration = loaded_dict['iter']
-        return loaded_dict['infos']
-
+        self.current_learning_iteration = loaded_dict["iter"]
+        return loaded_dict["infos"]
 
     def get_inference_policy(self, device=None):
         self.eval_mode()  # switch to evaluation mode (dropout for example)
