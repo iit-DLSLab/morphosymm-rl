@@ -17,7 +17,8 @@ from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
 from rsl_rl.utils import store_code_state
 
-from morphosymm_rl.symm_actor_critic import SymmActorCritic
+#from morphosymm_rl.symm_actor_critic import SymmActorCritic
+from morphosymm_rl.actor_critic_symm_equivariant_nn import ActorCriticSymmEquivariantNN as SymmActorCritic
 from morphosymm_rl.ppo_symm_data_augment import PPOSymmDataAugmented
 
 
