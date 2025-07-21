@@ -47,12 +47,11 @@ class SymmActorCritic(ActorCritic):
         obs_space_names = morphologycal_symmetries_cfg["obs_space_names"]
         action_space_names = morphologycal_symmetries_cfg["action_space_names"]
         joints_order = morphologycal_symmetries_cfg["joints_order"]
-        history_length = morphologycal_symmetries_cfg["history_length"]
         robot_name = morphologycal_symmetries_cfg["robot_name"]
 
         G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names, joints_order)
 
-        obs_space_reps = [obs_reps[n] for n in obs_space_names] * history_length
+        obs_space_reps = [obs_reps[n] for n in obs_space_names]
         act_space_reps = [obs_reps[n] for n in action_space_names]
 
         gspace = escnn.gspaces.no_base_space(G)
