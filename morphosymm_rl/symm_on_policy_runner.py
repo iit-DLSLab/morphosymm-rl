@@ -20,6 +20,7 @@ from rsl_rl.utils import store_code_state
 #from morphosymm_rl.symm_actor_critic import SymmActorCritic
 from morphosymm_rl.actor_critic_symm_equivariant_nn import ActorCriticSymmEquivariantNN as SymmActorCritic
 from morphosymm_rl.ppo_symm_data_augment import PPOSymmDataAugmented
+from morphosymm_rl.ac_moe import ActorCriticMoE
 
 
 class SymmOnPolicyRunner:
@@ -54,7 +55,7 @@ class SymmOnPolicyRunner:
             ).to(self.device)
         else:
             policy_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
-            policy: ActorCritic | ActorCriticRecurrent = policy_class(
+            policy: ActorCritic | ActorCriticRecurrent | ActorCriticMoE = policy_class(
                 num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg
             ).to(self.device)
 
