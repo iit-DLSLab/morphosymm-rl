@@ -15,7 +15,7 @@ from symm_learning.models import EMLP, IMLP
 G = None
 
 
-class SymmActorCritic(ActorCritic):
+class ActorCriticSymm(ActorCritic):
     """Symmetric Actor-Critic using an Equivariant Policy and an Invariant Critic."""
 
     is_recurrent = False
@@ -44,24 +44,27 @@ class SymmActorCritic(ActorCritic):
         )
 
         # MorphoSymm components
-        obs_space_names = morphologycal_symmetries_cfg["obs_space_names"]
+        obs_space_names_actor = morphologycal_symmetries_cfg["obs_space_names_actor"]
+        obs_space_names_critic = morphologycal_symmetries_cfg["obs_space_names_critic"]
         action_space_names = morphologycal_symmetries_cfg["action_space_names"]
         joints_order = morphologycal_symmetries_cfg["joints_order"]
         robot_name = morphologycal_symmetries_cfg["robot_name"]
 
-        G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names, joints_order)
+        G_actor, obs_reps_actor = configure_observation_space_representations(robot_name, obs_space_names_actor, joints_order)
+        G_critic, obs_reps_critic = configure_observation_space_representations(robot_name, obs_space_names_critic, joints_order)
 
-        obs_space_reps = [obs_reps[n] for n in obs_space_names]
-        act_space_reps = [obs_reps[n] for n in action_space_names]
+        obs_space_reps_actor = [obs_reps_actor[n] for n in obs_space_names_actor]
+        obs_space_reps_critic = [obs_reps_critic[n] for n in obs_space_names_critic]
+        act_space_reps = [obs_reps_actor[n] for n in action_space_names]
 
-        gspace = escnn.gspaces.no_base_space(G)
-        self.G = G
+        self.G = G_actor
+        gspace = escnn.gspaces.no_base_space(self.G)
+        self.num_replica = len(self.G.elements)
         # G-equivariant actor
-        self.actor_in_type = FieldType(gspace, obs_space_reps)
+        self.actor_in_type = FieldType(gspace, obs_space_reps_actor)
         self.actor_out_type = FieldType(gspace, act_space_reps)
         # G-invariant critic
-        self.critic_in_type = FieldType(gspace, obs_space_reps)
-        self.num_replica = len(G.elements)
+        self.critic_in_type = FieldType(gspace, obs_space_reps_critic)
 
         # Policy funciton parameterizes a G-equivariant Multivariate Normal distribution
         self.action_gaussian = EquivMultivariateNormal(y_type=self.actor_out_type)
