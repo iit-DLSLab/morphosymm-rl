@@ -19,9 +19,9 @@ maintainers = [
 ]
 # Dependencies ___________________________________________________________________________________________________
 dependencies = [
-  "torch==2.5.1",                       # Isaacsim requested version https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html
-  "torchvision==0.20.1",                # Isaacsim requested version https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html
-  "isaacsim[all,extscache]==4.5.0",
+  "torch",                       # Isaacsim requested version https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html
+  "torchvision",                # Isaacsim requested version https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html
+  "isaacsim[all,extscache]",
   "isaaclab",
   "rsl-rl-lib==2.3.3",
   "morpho-symm[pin]",                   # We require pinnochio for custom joint orderings. 

@@ -32,7 +32,9 @@ class SymmOnPolicyRunner:
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
-
+        
+        if(self.alg_cfg["schedule"] == "interval"):
+            self.schedule_interval_switch_time = self.alg_cfg["schedule_interval_switch_time"]
         self.morphologycal_symmetries_cfg = train_cfg["morphologycal_symmetries_cfg"]
 
         # resolve training type depending on the algorithm
@@ -255,6 +257,9 @@ class SymmOnPolicyRunner:
                 if self.logger_type in ["wandb", "neptune"] and git_file_paths:
                     for path in git_file_paths:
                         self.writer.save_file(path)
+
+            if(self.alg.schedule == "interval" and self.current_learning_iteration == self.schedule_interval_switch_time):
+                self.alg.schedule = "adaptive"
 
         # Save the final model after training
         if self.log_dir is not None:
