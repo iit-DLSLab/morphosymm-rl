@@ -73,25 +73,28 @@ class PPOSymmDataAugmented:
         self.symmetry = None
 
         # MorphoSymm components
-        obs_space_names = morphologycal_symmetries_cfg["obs_space_names"]
+        obs_space_names_actor = morphologycal_symmetries_cfg["obs_space_names_actor"]
+        obs_space_names_critic = morphologycal_symmetries_cfg["obs_space_names_critic"]
         action_space_names = morphologycal_symmetries_cfg["action_space_names"]
         joints_order = morphologycal_symmetries_cfg["joints_order"]
-        history_length = morphologycal_symmetries_cfg["history_length"]
         robot_name = morphologycal_symmetries_cfg["robot_name"]
 
-        G, obs_reps = configure_observation_space_representations(robot_name, obs_space_names, joints_order)
+        G_actor, obs_reps_actor = configure_observation_space_representations(robot_name, obs_space_names_actor, joints_order)
+        G_critic, obs_reps_critic = configure_observation_space_representations(robot_name, obs_space_names_critic, joints_order)
 
-        obs_space_reps = [obs_reps[n] for n in obs_space_names] * history_length
-        act_space_reps = [obs_reps[n] for n in action_space_names]
-        # rep_extra_obs = [rep_R3, rep_R3_pseudo, trivial_rep, trivial_rep, rep_friction, rep_R3, trivial_rep, trivial_rep, rep_kin_three, rep_kin_three, rep_kin_three, rep_kin_three, trivial_rep, trivial_rep]
+        obs_space_reps_actor = [obs_reps_actor[n] for n in obs_space_names_actor]
+        obs_space_reps_critic = [obs_reps_critic[n] for n in obs_space_names_critic]
+        act_space_reps = [obs_reps_actor[n] for n in action_space_names]
 
-        gspace = escnn.gspaces.no_base_space(G)
-        self.in_field_type = FieldType(gspace, obs_space_reps)
-        self.out_field_type = FieldType(gspace, act_space_reps)
+        self.G = G_actor
+        gspace = escnn.gspaces.no_base_space(self.G)
+        self.num_replica = len(self.G.elements)
+        # Actor replica
+        self.actor_in_type = FieldType(gspace, obs_space_reps_actor)
+        self.actor_out_type = FieldType(gspace, act_space_reps)
+        # Critic replica
+        self.critic_in_field_type = FieldType(gspace, obs_space_reps_critic)
 
-        self.critic_in_field_type = FieldType(gspace, obs_space_reps)
-        self.num_replica = len(G.elements)
-        self.G = G
 
     def init_storage(
         self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, actions_shape
@@ -156,8 +159,8 @@ class PPOSymmDataAugmented:
 
     def augment_transitions(self):
         t = self.transition
-        out_field_type = self.out_field_type
-        in_field_type = self.in_field_type
+        out_field_type = self.actor_out_type
+        in_field_type = self.actor_in_type
         critic_in_field_type = self.critic_in_field_type
         G = self.G
         t.actions = torch.cat(

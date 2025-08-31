@@ -111,6 +111,8 @@ def configure_observation_space_representations(
             obs_reps[obs_name] = rep_Rd_pseudo
         elif "ctrl_commands" in obs_name:
             obs_reps[obs_name] = rep_ctrl_commands_lin + rep_ctrl_commands_ang
+        elif obs_name in ["position_gains", "velocity_gains", "friction_static", "friction_dynamic", "armature"]:
+            obs_reps[obs_name] = rep_Q_js  # Every joints can have different values!
         elif "heightmap" in obs_name:
             raise NotImplementedError(
                 f"Heightmap observation representation is not implemented for robot {robot_name}."

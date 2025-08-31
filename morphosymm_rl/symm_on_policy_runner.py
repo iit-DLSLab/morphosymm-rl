@@ -17,8 +17,10 @@ from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
 from rsl_rl.utils import store_code_state
 
-from morphosymm_rl.symm_actor_critic import SymmActorCritic
+from morphosymm_rl.ac_symm import ActorCriticSymm
+#from morphosymm_rl.actor_critic_symm_equivariant_nn import ActorCriticSymmEquivariantNN as ActorCriticSymm
 from morphosymm_rl.ppo_symm_data_augment import PPOSymmDataAugmented
+from morphosymm_rl.ac_moe import ActorCriticMoE
 
 
 class SymmOnPolicyRunner:
@@ -30,7 +32,9 @@ class SymmOnPolicyRunner:
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
-
+        
+        if(self.alg_cfg["schedule"] == "interval"):
+            self.schedule_interval_switch_time = self.alg_cfg["schedule_interval_switch_time"]
         self.morphologycal_symmetries_cfg = train_cfg["morphologycal_symmetries_cfg"]
 
         # resolve training type depending on the algorithm
@@ -46,14 +50,14 @@ class SymmOnPolicyRunner:
         num_obs = obs.shape[1]
         num_critic_obs = extras["observations"]["critic"].shape[1] if "critic" in extras["observations"] else num_obs
 
-        if self.policy_cfg["class_name"] == "SymmActorCritic":
+        if self.policy_cfg["class_name"] == "ActorCriticSymm":
             policy_class = eval(self.policy_cfg.pop("class_name"))
-            policy: SymmActorCritic = policy_class(
+            policy: ActorCriticSymm = policy_class(
                 num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg, **self.morphologycal_symmetries_cfg
             ).to(self.device)
         else:
             policy_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
-            policy: ActorCritic | ActorCriticRecurrent = policy_class(
+            policy: ActorCritic | ActorCriticRecurrent | ActorCriticMoE = policy_class(
                 num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg
             ).to(self.device)
 
@@ -253,6 +257,9 @@ class SymmOnPolicyRunner:
                 if self.logger_type in ["wandb", "neptune"] and git_file_paths:
                     for path in git_file_paths:
                         self.writer.save_file(path)
+
+            if(self.alg.schedule == "interval" and self.current_learning_iteration == self.schedule_interval_switch_time):
+                self.alg.schedule = "adaptive"
 
         # Save the final model after training
         if self.log_dir is not None:

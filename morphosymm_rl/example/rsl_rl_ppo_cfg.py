@@ -23,7 +23,6 @@ class MorphologycalSymmetriesCfg:
 
     joints_order = None
 
-    history_length = None
 
     robot_name = None
 
@@ -36,7 +35,7 @@ class AliengoFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "aliengo_flat_direct"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
-        class_name="SymmActorCritic",  # ActorCritic, ActorCriticRecurrent, SymmActorCritic,
+        class_name="ActorCriticSymm",  # ActorCritic, ActorCriticRecurrent, ActorCriticSymm,
         init_noise_std=1.0,
         actor_hidden_dims=[128, 128, 128],
         critic_hidden_dims=[128, 128, 128],
@@ -59,6 +58,7 @@ class AliengoFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     )
 
     # Symmetry Related Stuff
+    history_length=5
     morphologycal_symmetries_cfg = MorphologycalSymmetriesCfg(
         obs_space_names=[
             "base_lin_vel:base",
@@ -69,7 +69,7 @@ class AliengoFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
             "qvel_js",
             "actions",
             "clock_data",
-        ],
+        ]*int(history_length),
         action_space_names=["actions"],
         joints_order=[
             "FL_hip_joint",
@@ -85,6 +85,5 @@ class AliengoFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
             "RL_calf_joint",
             "RR_calf_joint",
         ],
-        history_length=5,
         robot_name="a1",
     )
