@@ -41,8 +41,9 @@ If you find the work useful, please consider citing one of our works:
   title ={Morphological symmetries in robotics},
   journal = {The International Journal of Robotics Research},
   year = {2025},
-  doi = {10.1177/02783649241282422},
-  URL = {https://doi.org/10.1177/02783649241282422},
-  eprint = {https://doi.org/10.1177/02783649241282422}
+  volume = {44},
+  number = {10-11},
+  pages = {1743-1766},
+  doi = {10.1177/02783649241282422}
 }
 ```
