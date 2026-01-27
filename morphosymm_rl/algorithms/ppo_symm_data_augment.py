@@ -27,7 +27,8 @@ class PPOSymmDataAugmented:
     def __init__(
         self,
         policy,
-        storage: RolloutStorage,
+        storage_hack: RolloutStorage,
+        obs_hack: TensorDict,
         num_learning_epochs: int = 5,
         num_mini_batches: int = 4,
         clip_param: float = 0.2,
@@ -63,10 +64,6 @@ class PPOSymmDataAugmented:
 
         # Create the optimizer
         self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
-
-        # Add storage
-        self.storage = storage
-        self.transition = RolloutStorage.Transition()
 
         # PPO parameters
         self.clip_param = clip_param
@@ -107,19 +104,39 @@ class PPOSymmDataAugmented:
         self.critic_in_field_type = FieldType(gspace, obs_space_reps_critic)
 
 
-    """def act(self, obs, critic_obs):
-        if self.policy.is_recurrent:
-            self.transition.hidden_states = self.policy.get_hidden_states()
-        # Compute the actions and values
-        self.transition.actions = self.policy.act(obs).detach()
-        self.transition.values = self.policy.evaluate(critic_obs).detach()
-        self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
-        self.transition.action_mean = self.policy.action_mean.detach()
-        self.transition.action_sigma = self.policy.action_std.detach()
-        # need to record obs and critic_obs before env.step()
-        self.transition.observations = obs
-        self.transition.privileged_observations = critic_obs
-        return self.transition.actions"""
+        # Add storage
+        #self.storage = storage
+        
+        # Initialize the storage
+        # Build an empty TensorDict `obs` whose batch size is expanded to
+        # `storage_hack.num_envs * self.num_replica` while keeping the
+        # per-field trailing dimensions and dtypes from `obs_hack`.
+        batch_size = int(storage_hack.num_envs * self.num_replica)
+        # Infer per-field shapes, device and dtype from the provided `obs_hack`.
+        policy_shape = tuple(obs_hack["policy"].shape[1:])
+        common_shape = tuple(obs_hack["common"].shape[1:])
+        critic_shape = tuple(obs_hack["critic"].shape[1:])
+        device = obs_hack["policy"].device
+
+        obs = TensorDict(
+            {
+                "policy": torch.empty((batch_size, *policy_shape), device=device, dtype=obs_hack["policy"].dtype),
+                "common": torch.empty((batch_size, *common_shape), device=device, dtype=obs_hack["common"].dtype),
+                "critic": torch.empty((batch_size, *critic_shape), device=device, dtype=obs_hack["critic"].dtype),
+            },
+            batch_size=torch.Size([batch_size]),
+            device=device,
+        )
+
+        self.storage = RolloutStorage(
+            "rl",
+            storage_hack.num_envs * self.num_replica,
+            storage_hack.num_transitions_per_env,
+            obs,
+            storage_hack.actions_shape,
+            storage_hack.device,
+        )
+        self.transition = RolloutStorage.Transition()
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
@@ -207,7 +224,6 @@ class PPOSymmDataAugmented:
             + [in_field_type.transform_fibers(t.observations["common"], g) for g in G.elements[1:]],
             dim=0,
         )
-        breakpoint()
         critic_obs_aug = torch.cat(
             [t.observations["critic"]]
             + [critic_in_field_type.transform_fibers(t.observations["critic"], g) for g in G.elements[1:]],
@@ -231,7 +247,9 @@ class PPOSymmDataAugmented:
     def compute_returns(self, obs: TensorDict) -> None:
         st = self.storage
         # Compute value for the last step
-        last_values = self.policy.evaluate(obs).detach()
+        last_values_temp = self.policy.evaluate(obs).detach()
+        # Augment the last values with symmetries
+        last_values = self.augment_values(last_values_temp)
         # Compute returns and advantages
         advantage = 0
         for step in reversed(range(st.num_transitions_per_env)):

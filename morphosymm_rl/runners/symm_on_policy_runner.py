@@ -294,7 +294,7 @@ class SymmOnPolicyRunner:
         if self.alg_cfg["class_name"] == "PPOSymmDataAugmented":
             self.alg_cfg.pop("class_name")
             alg: PPOSymmDataAugmented = PPOSymmDataAugmented(
-                actor_critic, storage, device=self.device, **self.alg_cfg, **self.morphologycal_symmetries_cfg
+                actor_critic, storage, obs, device=self.device, **self.alg_cfg, **self.morphologycal_symmetries_cfg
             )
         else:
             alg_class = resolve_callable(self.alg_cfg.pop("class_name"))
