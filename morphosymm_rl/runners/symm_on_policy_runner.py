@@ -279,6 +279,11 @@ class SymmOnPolicyRunner:
             actor_critic: ActorCriticSymm = ActorCriticSymm(
                 num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg, **self.morphologycal_symmetries_cfg
             ).to(self.device)
+        elif self.policy_cfg["class_name"] == "ActorCriticMoE":
+            self.policy_cfg.pop("class_name")
+            actor_critic: ActorCriticMoE = ActorCriticMoE(
+                obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
+            ).to(self.device)
         else:
             actor_critic_class = resolve_callable(self.policy_cfg.pop("class_name"))
             actor_critic: ActorCritic | ActorCriticRecurrent | ActorCriticCNN = actor_critic_class(
