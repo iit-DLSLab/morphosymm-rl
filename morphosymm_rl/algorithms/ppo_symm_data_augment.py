@@ -114,14 +114,12 @@ class PPOSymmDataAugmented:
         batch_size = int(storage_hack.num_envs * self.num_replica)
         # Infer per-field shapes, device and dtype from the provided `obs_hack`.
         policy_shape = tuple(obs_hack["policy"].shape[1:])
-        common_shape = tuple(obs_hack["common"].shape[1:])
         critic_shape = tuple(obs_hack["critic"].shape[1:])
         device = obs_hack["policy"].device
 
         obs = TensorDict(
             {
                 "policy": torch.empty((batch_size, *policy_shape), device=device, dtype=obs_hack["policy"].dtype),
-                "common": torch.empty((batch_size, *common_shape), device=device, dtype=obs_hack["common"].dtype),
                 "critic": torch.empty((batch_size, *critic_shape), device=device, dtype=obs_hack["critic"].dtype),
             },
             batch_size=torch.Size([batch_size]),
