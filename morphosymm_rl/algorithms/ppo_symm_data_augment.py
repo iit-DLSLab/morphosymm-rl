@@ -219,11 +219,6 @@ class PPOSymmDataAugmented:
             + [in_field_type.transform_fibers(t.observations["policy"], g) for g in G.elements[1:]],
             dim=0,
         )
-        common_obs_aug = torch.cat(
-            [t.observations["common"]]
-            + [in_field_type.transform_fibers(t.observations["common"], g) for g in G.elements[1:]],
-            dim=0,
-        )
         critic_obs_aug = torch.cat(
             [t.observations["critic"]]
             + [critic_in_field_type.transform_fibers(t.observations["critic"], g) for g in G.elements[1:]],
@@ -234,7 +229,6 @@ class PPOSymmDataAugmented:
         t.observations = TensorDict(
             {
                 "policy": policy_obs_aug,
-                "common": common_obs_aug,
                 "critic": critic_obs_aug,
             },
             batch_size=policy_obs_aug.shape[:1],
