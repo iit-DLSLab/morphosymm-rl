@@ -1,4 +1,7 @@
-# Add reference to paper
+# Copyright (c) 2021-2025, ETH Zurich and NVIDIA CORPORATION
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
 
 from __future__ import annotations
 
@@ -8,27 +11,22 @@ import torch.optim as optim
 from itertools import chain
 from tensordict import TensorDict
 
-import escnn
-from escnn.nn import FieldType
-from hydra import compose, initialize
-from hydra.core.global_hydra import GlobalHydra
-from rsl_rl.modules import ActorCritic
+from rsl_rl.modules import ActorCritic, ActorCriticCNN, ActorCriticRecurrent
+from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.algorithms import PPO
-from morphosymm_rl.symm_utils import configure_observation_space_representations
+from rsl_rl.utils import resolve_callable
 
 
-class PPOSymmDataAugmented:
-    """Proximal Policy Optimization algorithm with data augmentation via symmetries."""
+class PPO:
+    """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
 
-    policy: ActorCritic
+    policy: ActorCritic | ActorCriticRecurrent | ActorCriticCNN
     """The actor critic module."""
 
     def __init__(
         self,
-        policy,
-        storage_hack: RolloutStorage,
-        obs_hack: TensorDict,
+        policy: ActorCritic | ActorCriticRecurrent | ActorCriticCNN,
+        storage: RolloutStorage,
         num_learning_epochs: int = 5,
         num_mini_batches: int = 4,
         clip_param: float = 0.2,
@@ -43,20 +41,60 @@ class PPOSymmDataAugmented:
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
         device: str = "cpu",
-        **morphologycal_symmetries_cfg,
-    ):
+        # RND parameters
+        rnd_cfg: dict | None = None,
+        # Symmetry parameters
+        symmetry_cfg: dict | None = None,
+        # Distributed training parameters
+        multi_gpu_cfg: dict | None = None,
+    ) -> None:
+        # Device-related parameters
         self.device = device
-        self.is_multi_gpu = False
-        self.gpu_global_rank = 0
-        self.gpu_world_size = 1
-        self.rnd = None
-        self.rnd_optimizer = None
-        self.symmetry = None
+        self.is_multi_gpu = multi_gpu_cfg is not None
 
-        self.desired_kl = desired_kl
-        self.schedule = schedule
-        self.learning_rate = learning_rate
-        self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        # Multi-GPU parameters
+        if multi_gpu_cfg is not None:
+            self.gpu_global_rank = multi_gpu_cfg["global_rank"]
+            self.gpu_world_size = multi_gpu_cfg["world_size"]
+        else:
+            self.gpu_global_rank = 0
+            self.gpu_world_size = 1
+
+        # RND components
+        if rnd_cfg:
+            # Extract parameters used in ppo
+            rnd_lr = rnd_cfg.pop("learning_rate", 1e-3)
+            # Create RND module
+            self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg)
+            # Create RND optimizer
+            params = self.rnd.predictor.parameters()
+            self.rnd_optimizer = optim.Adam(params, lr=rnd_lr)
+        else:
+            self.rnd = None
+            self.rnd_optimizer = None
+
+        # Symmetry components
+        if symmetry_cfg is not None:
+            # Check if symmetry is enabled
+            use_symmetry = symmetry_cfg["use_data_augmentation"] or symmetry_cfg["use_mirror_loss"]
+            # Print that we are not using symmetry
+            if not use_symmetry:
+                print("Symmetry not used for learning. We will use it for logging instead.")
+            # Resolve the data augmentation function (supports string names or direct callables)
+            symmetry_cfg["data_augmentation_func"] = resolve_callable(symmetry_cfg["data_augmentation_func"])
+            # Check valid configuration
+            if not callable(symmetry_cfg["data_augmentation_func"]):
+                raise ValueError(
+                    f"Symmetry configuration exists but the function is not callable: "
+                    f"{symmetry_cfg['data_augmentation_func']}"
+                )
+            # Check if the policy is compatible with symmetry
+            if isinstance(policy, ActorCriticRecurrent):
+                raise ValueError("Symmetry augmentation is not supported for recurrent policies.")
+            # Store symmetry configuration
+            self.symmetry = symmetry_cfg
+        else:
+            self.symmetry = None
 
         # PPO components
         self.policy = policy
@@ -64,6 +102,10 @@ class PPOSymmDataAugmented:
 
         # Create the optimizer
         self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
+
+        # Add storage
+        self.storage = storage
+        self.transition = RolloutStorage.Transition()
 
         # PPO parameters
         self.clip_param = clip_param
@@ -79,62 +121,6 @@ class PPOSymmDataAugmented:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
-
-        # MorphoSymm components
-        obs_space_names_actor = morphologycal_symmetries_cfg["obs_space_names_actor"]
-        obs_space_names_critic = morphologycal_symmetries_cfg["obs_space_names_critic"]
-        action_space_names = morphologycal_symmetries_cfg["action_space_names"]
-        joints_order = morphologycal_symmetries_cfg["joints_order"]
-        robot_name = morphologycal_symmetries_cfg["robot_name"]
-
-        G_actor, obs_reps_actor = configure_observation_space_representations(robot_name, obs_space_names_actor, joints_order)
-        G_critic, obs_reps_critic = configure_observation_space_representations(robot_name, obs_space_names_critic, joints_order)
-
-        obs_space_reps_actor = [obs_reps_actor[n] for n in obs_space_names_actor]
-        obs_space_reps_critic = [obs_reps_critic[n] for n in obs_space_names_critic]
-        act_space_reps = [obs_reps_actor[n] for n in action_space_names]
-
-        self.G = G_actor
-        gspace = escnn.gspaces.no_base_space(self.G)
-        self.num_replica = len(self.G.elements)
-        # Actor replica
-        self.actor_in_type = FieldType(gspace, obs_space_reps_actor)
-        self.actor_out_type = FieldType(gspace, act_space_reps)
-        # Critic replica
-        self.critic_in_field_type = FieldType(gspace, obs_space_reps_critic)
-
-
-        # Add storage
-        #self.storage = storage
-        
-        # Initialize the storage
-        # Build an empty TensorDict `obs` whose batch size is expanded to
-        # `storage_hack.num_envs * self.num_replica` while keeping the
-        # per-field trailing dimensions and dtypes from `obs_hack`.
-        batch_size = int(storage_hack.num_envs * self.num_replica)
-        # Infer per-field shapes, device and dtype from the provided `obs_hack`.
-        policy_shape = tuple(obs_hack["policy"].shape[1:])
-        critic_shape = tuple(obs_hack["critic"].shape[1:])
-        device = obs_hack["policy"].device
-
-        obs = TensorDict(
-            {
-                "policy": torch.empty((batch_size, *policy_shape), device=device, dtype=obs_hack["policy"].dtype),
-                "critic": torch.empty((batch_size, *critic_shape), device=device, dtype=obs_hack["critic"].dtype),
-            },
-            batch_size=torch.Size([batch_size]),
-            device=device,
-        )
-
-        self.storage = RolloutStorage(
-            "rl",
-            storage_hack.num_envs * self.num_replica,
-            storage_hack.num_transitions_per_env,
-            obs,
-            storage_hack.actions_shape,
-            storage_hack.device,
-        )
-        self.transition = RolloutStorage.Transition()
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
@@ -175,73 +161,15 @@ class PPOSymmDataAugmented:
                 self.transition.values * extras["time_outs"].unsqueeze(1).to(self.device), 1
             )
 
-        # Augment the transition
-        self.augment_transitions()
-
         # Record the transition
         self.storage.add_transition(self.transition)
         self.transition.clear()
         self.policy.reset(dones)
 
-    def augment_transitions(self):
-        t = self.transition
-
-        out_field_type = self.actor_out_type
-        in_field_type = self.actor_in_type
-        critic_in_field_type = self.critic_in_field_type
-        G = self.G
-        t.actions = torch.cat(
-            [t.actions] + [out_field_type.transform_fibers(t.actions, g) for g in G.elements[1:]],
-            dim=0,
-        )
-        t.actions_log_prob = torch.cat([t.actions_log_prob] * self.num_replica, dim=0)
-        t.action_mean = torch.cat(
-            [t.action_mean] + [out_field_type.transform_fibers(t.action_mean, g) for g in G.elements[1:]],
-            dim=0,
-        )
-        t.action_sigma = torch.abs(
-            torch.cat(
-                [t.action_sigma] + [out_field_type.transform_fibers(t.action_sigma, g) for g in G.elements[1:]],
-                dim=0,
-            )
-        )
-        t.values = torch.cat([t.values] * self.num_replica, dim=0)
-        t.rewards = torch.cat([t.rewards] * self.num_replica, dim=0)
-        t.dones = torch.cat([t.dones] * self.num_replica, dim=0)
-
-        # Build augmented observation tensors. TensorDict enforces a consistent batch_size,
-        # so create a new TensorDict with the expanded batch instead of assigning leaves
-        # with a mismatched batch dimension.
-        policy_obs_aug = torch.cat(
-            [t.observations["policy"]]
-            + [in_field_type.transform_fibers(t.observations["policy"], g) for g in G.elements[1:]],
-            dim=0,
-        )
-        critic_obs_aug = torch.cat(
-            [t.observations["critic"]]
-            + [critic_in_field_type.transform_fibers(t.observations["critic"], g) for g in G.elements[1:]],
-            dim=0,
-        )
-
-        # Create a new TensorDict with the correct (expanded) batch size and assign it.
-        t.observations = TensorDict(
-            {
-                "policy": policy_obs_aug,
-                "critic": critic_obs_aug,
-            },
-            batch_size=policy_obs_aug.shape[:1],
-        )
-
-    def augment_values(self, values):
-        values = torch.cat([values] * self.num_replica, dim=0)
-        return values
-
     def compute_returns(self, obs: TensorDict) -> None:
         st = self.storage
         # Compute value for the last step
-        last_values_temp = self.policy.evaluate(obs).detach()
-        # Augment the last values with symmetries
-        last_values = self.augment_values(last_values_temp)
+        last_values = self.policy.evaluate(obs).detach()
         # Compute returns and advantages
         advantage = 0
         for step in reversed(range(st.num_transitions_per_env)):
@@ -429,13 +357,6 @@ class PPOSymmDataAugmented:
                 # Compute the loss as the mean squared error
                 mseloss = torch.nn.MSELoss()
                 rnd_loss = mseloss(predicted_embedding, target_embedding)
-
-
-            # MoE loss
-            if hasattr(self.policy, "use_gate_loss") and self.policy.use_gate_loss:
-                gate_entropy = self.policy.gate_entropy[:original_batch_size]
-                gate_entropy_coef = 0.001
-                loss -= gate_entropy_coef * gate_entropy
 
             # Compute the gradients for PPO
             self.optimizer.zero_grad()

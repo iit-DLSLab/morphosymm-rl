@@ -21,7 +21,9 @@ class MLP_net(nn.Sequential):
 
 class ActorMoE(nn.Module):
     """
-    Mixture-of-Experts actor:  ⎡expert_1(x) … expert_K(x)⎤·softmax(gate(x))
+    Mixture-of-Experts actor:
+    ⎡expert_1(x) … expert_K(x)⎤ · softmax(gate(x))
+    Optionally uses top-k sparse gating.
     """
 
     def __init__(
@@ -29,15 +31,21 @@ class ActorMoE(nn.Module):
         obs_dim: int,
         act_dim: int,
         hidden_dims,
-        num_experts: int = 4,
         gate_hidden_dims: list[int] | None = None,
-        activation="elu",
+        activation="elu", 
+        num_experts: int = 4,
+        top_k: None = None,
+        use_gate_loss: bool = False,
     ):
         super().__init__()
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.num_experts = num_experts
+        self.top_k = top_k
         act = resolve_nn_activation(activation)
+
+        self._last_gate_weights = None
+        self.use_gate_loss = use_gate_loss
 
         # experts
         self.experts = nn.ModuleList(
@@ -53,19 +61,46 @@ class ActorMoE(nn.Module):
             last_dim = h
         gate_layers.append(nn.Linear(last_dim, num_experts))
         self.gate = nn.Sequential(*gate_layers)
-        self.softmax = nn.Softmax(dim=-1)  # kept separate for ONNX clarity
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self.softmax = nn.Softmax(dim=-1)  # ONNX-friendly
+
+    def forward(self, x: torch.Tensor, return_gate: bool = False) -> torch.Tensor:
         """
         Args:
             x: [batch, obs_dim]
         Returns:
             mean action: [batch, act_dim]
         """
+        # [batch, act_dim, K]
         expert_out = torch.stack([e(x) for e in self.experts], dim=-1)
-        gate_logits = self.gate(x)  # [batch, K]
-        weights = self.softmax(gate_logits).unsqueeze(1)  # [batch, 1, K]
-        return (expert_out * weights).sum(-1)  # weighted sum -> [batch, A]
+
+        # [batch, K]
+        gate_logits = self.gate(x)
+
+        # ---- gating ----
+        if self.top_k is None or self.top_k >= self.num_experts:
+            # standard dense MoE
+            weights = self.softmax(gate_logits).unsqueeze(1)
+        else:
+            # top-k sparse MoE
+            topk_vals, topk_idx = torch.topk(
+                gate_logits, k=self.top_k, dim=-1
+            )
+
+            masked_logits = torch.full_like(gate_logits, float("-inf"))
+            masked_logits.scatter_(
+                dim=-1, index=topk_idx, src=topk_vals
+            )
+
+            weights = self.softmax(masked_logits).unsqueeze(1)
+
+
+        # cache for PPO losses / logging
+        self._last_gate_weights = weights
+
+
+        # weighted sum -> [batch, act_dim]
+        return (expert_out * weights).sum(dim=-1)
 
 
 class ActorCriticMoE(nn.Module):
@@ -82,20 +117,13 @@ class ActorCriticMoE(nn.Module):
         critic_obs_normalization: bool = False,
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
-        num_experts: int = 4,
         activation: str = "elu",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         state_dependent_std: bool = False,
-        **kwargs: dict[str, Any],
+        **moe_cfg: dict[str, Any],
     ):
-        if kwargs:
-            print(
-                (
-                    "ActorCriticMoE.__init__ ignored unexpected arguments: "
-                    + str(list(kwargs.keys()))
-                )
-            )
+
         super().__init__()
         act = resolve_nn_activation(activation)
 
@@ -117,13 +145,20 @@ class ActorCriticMoE(nn.Module):
             print("Not supported yet., switching to off")
             self.state_dependent_std = False
 
+
+        num_experts = moe_cfg["num_experts"]
+        top_k = moe_cfg["top_k"]
+        use_gate_loss = moe_cfg["use_gate_loss"]
+
         self.actor = ActorMoE(
             obs_dim=num_actor_obs,
             act_dim=num_actions,
             hidden_dims=actor_hidden_dims,
-            num_experts=num_experts,
             gate_hidden_dims=actor_hidden_dims[:-1],  # last layer is output
             activation=activation,
+            num_experts=num_experts,
+            top_k=top_k,
+            use_gate_loss=use_gate_loss
         )
 
         # Actor observation normalization
@@ -187,6 +222,25 @@ class ActorCriticMoE(nn.Module):
     @property
     def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
+
+    @property
+    def gate_weights(self) -> torch.Tensor | None:
+        """
+        Returns:
+            [batch, num_experts] gate probabilities from last forward pass
+        """
+        return self._last_gate_weights
+
+
+    @property
+    def gate_entropy(self) -> torch.Tensor | None:
+        """
+        Mean gate entropy from last forward pass (useful for PPO regularization)
+        """
+        if self._last_gate_weights is None:
+            return None
+        w = self._last_gate_weights
+        return -(w * torch.log(w + 1e-8)).sum(dim=-1).mean()
 
     def _update_distribution(self, obs: torch.Tensor) -> None:
         if self.state_dependent_std:

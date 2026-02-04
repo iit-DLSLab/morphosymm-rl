@@ -6,5 +6,6 @@
 """Implementation of different learning algorithms."""
 
 from .ppo_symm_data_augment import PPOSymmDataAugmented
+from .ppo import PPO
 
-__all__ = ["PPOSymmDataAugmented"]
+__all__ = ["PPOSymmDataAugmented", "PPO"]

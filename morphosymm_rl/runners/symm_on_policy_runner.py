@@ -11,7 +11,7 @@ import torch
 import warnings
 from tensordict import TensorDict
 
-from rsl_rl.algorithms import PPO
+#from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import (
     ActorCritic,
@@ -27,6 +27,7 @@ from rsl_rl.utils.logger import Logger
 from morphosymm_rl.modules.ac_symm import ActorCriticSymm
 from morphosymm_rl.modules.ac_moe import ActorCriticMoE
 from morphosymm_rl.algorithms.ppo_symm_data_augment import PPOSymmDataAugmented
+from morphosymm_rl.algorithms.ppo import PPO
 
 
 class SymmOnPolicyRunner:
@@ -41,6 +42,9 @@ class SymmOnPolicyRunner:
 
         # Morphological symmetries configuration
         self.morphologycal_symmetries_cfg = train_cfg["morphologycal_symmetries_cfg"]
+
+        # Mixture of Expert configuration
+        self.moe_cfg = train_cfg["moe_cfg"]
 
         # Setup multi-GPU training if enabled
         self._configure_multi_gpu()
@@ -282,7 +286,7 @@ class SymmOnPolicyRunner:
         elif self.policy_cfg["class_name"] == "ActorCriticMoE":
             self.policy_cfg.pop("class_name")
             actor_critic: ActorCriticMoE = ActorCriticMoE(
-                obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
+                obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg, **self.moe_cfg
             ).to(self.device)
         else:
             actor_critic_class = resolve_callable(self.policy_cfg.pop("class_name"))
@@ -306,5 +310,9 @@ class SymmOnPolicyRunner:
             alg: PPO = alg_class(
                 actor_critic, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
             )
+            #self.alg_cfg.pop("class_name")
+            #alg: PPO = PPO(
+            #    actor_critic, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
+            #)
 
         return alg
