@@ -306,13 +306,13 @@ class SymmOnPolicyRunner:
                 actor_critic, storage, obs, device=self.device, **self.alg_cfg, **self.morphologycal_symmetries_cfg
             )
         else:
-            alg_class = resolve_callable(self.alg_cfg.pop("class_name"))
-            alg: PPO = alg_class(
-                actor_critic, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
-            )
-            #self.alg_cfg.pop("class_name")
-            #alg: PPO = PPO(
+            #alg_class = resolve_callable(self.alg_cfg.pop("class_name"))
+            #alg: PPO = alg_class(
             #    actor_critic, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
             #)
+            self.alg_cfg.pop("class_name")
+            alg: PPO = PPO(
+                actor_critic, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
+            )
 
         return alg

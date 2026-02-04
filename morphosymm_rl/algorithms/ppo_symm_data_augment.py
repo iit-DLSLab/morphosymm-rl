@@ -432,7 +432,7 @@ class PPOSymmDataAugmented:
 
 
             # MoE loss
-            if hasattr(self.policy, "use_gate_loss") and self.policy.use_gate_loss:
+            if hasattr(self.policy.actor, "use_gate_loss") and self.policy.actor.use_gate_loss:
                 gate_entropy = self.policy.gate_entropy[:original_batch_size]
                 gate_entropy_coef = 0.001
                 loss -= gate_entropy_coef * gate_entropy

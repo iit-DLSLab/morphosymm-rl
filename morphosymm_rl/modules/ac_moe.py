@@ -223,23 +223,13 @@ class ActorCriticMoE(nn.Module):
     def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
 
-    @property
-    def gate_weights(self) -> torch.Tensor | None:
-        """
-        Returns:
-            [batch, num_experts] gate probabilities from last forward pass
-        """
-        return self._last_gate_weights
-
-
-    @property
     def gate_entropy(self) -> torch.Tensor | None:
         """
         Mean gate entropy from last forward pass (useful for PPO regularization)
         """
-        if self._last_gate_weights is None:
+        if self.actor._last_gate_weights is None:
             return None
-        w = self._last_gate_weights
+        w = self.actor._last_gate_weights
         return -(w * torch.log(w + 1e-8)).sum(dim=-1).mean()
 
     def _update_distribution(self, obs: torch.Tensor) -> None:

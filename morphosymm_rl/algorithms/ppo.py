@@ -358,6 +358,13 @@ class PPO:
                 mseloss = torch.nn.MSELoss()
                 rnd_loss = mseloss(predicted_embedding, target_embedding)
 
+            # MoE loss
+            if hasattr(self.policy.actor, "use_gate_loss") and self.policy.actor.use_gate_loss:
+                breakpoint()
+                gate_entropy = self.policy.gate_entropy[:original_batch_size]
+                gate_entropy_coef = 0.001
+                loss -= gate_entropy_coef * gate_entropy
+
             # Compute the gradients for PPO
             self.optimizer.zero_grad()
             loss.backward()
