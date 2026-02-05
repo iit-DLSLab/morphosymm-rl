@@ -228,7 +228,7 @@ class ActorCriticMoE(nn.Module):
         Mean gate entropy from last forward pass (useful for PPO regularization)
         """
         if self.actor._last_gate_weights is None:
-            return None
+            return 0.0
         w = self.actor._last_gate_weights
         return -(w * torch.log(w + 1e-8)).sum(dim=-1).mean()
 

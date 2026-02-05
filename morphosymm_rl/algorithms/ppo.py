@@ -360,8 +360,7 @@ class PPO:
 
             # MoE loss
             if hasattr(self.policy.actor, "use_gate_loss") and self.policy.actor.use_gate_loss:
-                breakpoint()
-                gate_entropy = self.policy.gate_entropy[:original_batch_size]
+                gate_entropy = self.policy.gate_entropy()
                 gate_entropy_coef = 0.001
                 loss -= gate_entropy_coef * gate_entropy
 
