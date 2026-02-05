@@ -434,7 +434,7 @@ class PPOSymmDataAugmented:
             # MoE loss
             if hasattr(self.policy.actor, "use_gate_loss") and self.policy.actor.use_gate_loss:
                 gate_entropy = self.policy.gate_entropy()
-                gate_entropy_coef = 0.001
+                gate_entropy_coef = 0.0001
                 loss -= gate_entropy_coef * gate_entropy
 
             # Compute the gradients for PPO
