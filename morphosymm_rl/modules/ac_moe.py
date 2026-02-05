@@ -19,7 +19,7 @@ class MLP_net(nn.Sequential):
         super().__init__(*layers)
 
 
-class ActorMoE(nn.Module):
+class MoE_net(nn.Module):
     """
     Mixture-of-Experts actor:
     ⎡expert_1(x) … expert_K(x)⎤ · softmax(gate(x))
@@ -150,7 +150,7 @@ class ActorCriticMoE(nn.Module):
         top_k = moe_cfg["top_k"]
         use_gate_loss = moe_cfg["use_gate_loss"]
 
-        self.actor = ActorMoE(
+        self.actor = MoE_net(
             obs_dim=num_actor_obs,
             act_dim=num_actions,
             hidden_dims=actor_hidden_dims,
@@ -169,7 +169,17 @@ class ActorCriticMoE(nn.Module):
             self.actor_obs_normalizer = torch.nn.Identity()
 
         # Critic
-        self.critic = MLP_net(num_critic_obs, critic_hidden_dims, 1, act)
+        #self.critic = MLP_net(num_critic_obs, critic_hidden_dims, 1, act)
+        self.critic = MoE_net(
+            obs_dim=num_critic_obs,
+            act_dim=1,
+            hidden_dims=critic_hidden_dims,
+            gate_hidden_dims=critic_hidden_dims[:-1],  # last layer is output
+            activation=activation,
+            num_experts=num_experts,
+            top_k=top_k,
+            use_gate_loss=use_gate_loss
+        )
 
         # Critic observation normalization
         self.critic_obs_normalization = critic_obs_normalization
