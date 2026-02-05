@@ -149,12 +149,13 @@ class ActorCriticMoE(nn.Module):
         num_experts = moe_cfg["num_experts"]
         top_k = moe_cfg["top_k"]
         use_gate_loss = moe_cfg["use_gate_loss"]
+        gate_hidden_dims = moe_cfg["gate_hidden_dims"]
 
         self.actor = MoE_net(
             obs_dim=num_actor_obs,
             act_dim=num_actions,
             hidden_dims=actor_hidden_dims,
-            gate_hidden_dims=actor_hidden_dims[:-1],  # last layer is output
+            gate_hidden_dims=gate_hidden_dims, 
             activation=activation,
             num_experts=num_experts,
             top_k=top_k,
@@ -174,7 +175,7 @@ class ActorCriticMoE(nn.Module):
             obs_dim=num_critic_obs,
             act_dim=1,
             hidden_dims=critic_hidden_dims,
-            gate_hidden_dims=critic_hidden_dims[:-1],  # last layer is output
+            gate_hidden_dims=gate_hidden_dims,
             activation=activation,
             num_experts=num_experts,
             top_k=top_k,
