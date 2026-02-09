@@ -18,6 +18,15 @@ class MLP_net(nn.Sequential):
                 layers.extend([nn.Linear(hidden_dims[i], hidden_dims[i + 1]), act])
         super().__init__(*layers)
 
+    @property
+    def in_features(self) -> int:
+        """Proxy to the in_features of the first linear layer so external code can
+        query an MLP's input size (e.g. exporter expecting `module.in_features`).
+        """
+        first = self[0]
+        # first is expected to be nn.Linear
+        return int(first.in_features)
+
 
 class MoE_net(nn.Module):
     """
@@ -34,17 +43,22 @@ class MoE_net(nn.Module):
         gate_hidden_dims: list[int] | None = None,
         activation="elu", 
         num_experts: int = 4,
-        top_k: None = None,
+        top_k: int = -1,
         use_gate_loss: bool = False,
     ):
         super().__init__()
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.num_experts = num_experts
-        self.top_k = top_k
+        # Use an integer sentinel (-1) for 'no top-k' to avoid Optional/None comparisons
+        # which break TorchScript. Store as int.
+        self.top_k = -1 if top_k is None else int(top_k)
         act = resolve_nn_activation(activation)
 
-        self._last_gate_weights = None
+        # Store last gate weights as a tensor sentinel (empty tensor) so TorchScript
+        # sees a consistent attribute type (Tensor) instead of switching from NoneType
+        # to Tensor during execution.
+        self._last_gate_weights = torch.empty(0)
         self.use_gate_loss = use_gate_loss
 
         # experts
@@ -64,6 +78,12 @@ class MoE_net(nn.Module):
 
         self.softmax = nn.Softmax(dim=-1)  # ONNX-friendly
 
+    def __getitem__(self, idx: int):
+        """Allow indexing into the MoE to get the underlying expert module
+        (keeps compatibility with code doing `actor[0]`).
+        """
+        return self.experts[idx]
+
     def forward(self, x: torch.Tensor, return_gate: bool = False) -> torch.Tensor:
         """
         Args:
@@ -78,19 +98,16 @@ class MoE_net(nn.Module):
         gate_logits = self.gate(x)
 
         # ---- gating ----
-        if self.top_k is None or self.top_k >= self.num_experts:
+        # Use sentinel < 0 to mean 'no top-k' so TorchScript never compares None with ints.
+        if self.top_k < 0 or self.top_k >= self.num_experts:
             # standard dense MoE
             weights = self.softmax(gate_logits).unsqueeze(1)
         else:
             # top-k sparse MoE
-            topk_vals, topk_idx = torch.topk(
-                gate_logits, k=self.top_k, dim=-1
-            )
+            topk_vals, topk_idx = torch.topk(gate_logits, k=self.top_k, dim=-1)
 
             masked_logits = torch.full_like(gate_logits, float("-inf"))
-            masked_logits.scatter_(
-                dim=-1, index=topk_idx, src=topk_vals
-            )
+            masked_logits.scatter_(dim=-1, index=topk_idx, src=topk_vals)
 
             weights = self.softmax(masked_logits).unsqueeze(1)
 
@@ -147,7 +164,8 @@ class ActorCriticMoE(nn.Module):
 
 
         num_experts = moe_cfg["num_experts"]
-        top_k = moe_cfg["top_k"]
+        raw_top_k = moe_cfg.get("top_k", -1)
+        top_k = -1 if raw_top_k is None else int(raw_top_k)
         use_gate_loss = moe_cfg["use_gate_loss"]
         gate_hidden_dims = moe_cfg["gate_hidden_dims"]
 
@@ -234,12 +252,13 @@ class ActorCriticMoE(nn.Module):
     def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
 
-    def gate_entropy(self) -> torch.Tensor | None:
+    def gate_entropy(self) -> torch.Tensor:
         """
         Mean gate entropy from last forward pass (useful for PPO regularization)
         """
-        if self.actor._last_gate_weights is None:
-            return 0.0
+        # If empty sentinel, return zero entropy
+        if self.actor._last_gate_weights.numel() == 0:
+            return torch.tensor(0.0)
         w = self.actor._last_gate_weights
         return -(w * torch.log(w + 1e-8)).sum(dim=-1).mean()
 
