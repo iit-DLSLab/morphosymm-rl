@@ -45,6 +45,7 @@ class MoE_net(nn.Module):
         num_experts: int = 4,
         top_k: int = -1,
         use_gate_loss: bool = False,
+        use_explicit_expert: bool = False,
     ):
         super().__init__()
         self.obs_dim = obs_dim
@@ -60,6 +61,8 @@ class MoE_net(nn.Module):
         # to Tensor during execution.
         self._last_gate_weights = torch.empty(0)
         self.use_gate_loss = use_gate_loss
+        
+        self.use_explicit_expert = use_explicit_expert
 
         # experts
         self.experts = nn.ModuleList(
@@ -91,29 +94,37 @@ class MoE_net(nn.Module):
         Returns:
             mean action: [batch, act_dim]
         """
+
         # [batch, act_dim, K]
         expert_out = torch.stack([e(x) for e in self.experts], dim=-1)
 
-        # [batch, K]
-        gate_logits = self.gate(x)
-
-        # ---- gating ----
-        # Use sentinel < 0 to mean 'no top-k' so TorchScript never compares None with ints.
-        if self.top_k < 0 or self.top_k >= self.num_experts:
-            # standard dense MoE
-            weights = self.softmax(gate_logits).unsqueeze(1)
+        if(self.use_explicit_expert):
+            # Extract expert selectors from last num_experts elements
+            expert_selector = x[:, -self.num_experts:]  # [batch, num_experts]
+            
+            # Use explicit expert selector instead of learned gate
+            weights = expert_selector.unsqueeze(1)  # [batch, 1, num_experts]
         else:
-            # top-k sparse MoE
-            topk_vals, topk_idx = torch.topk(gate_logits, k=self.top_k, dim=-1)
+            # [batch, K]
+            gate_logits = self.gate(x)
 
-            masked_logits = torch.full_like(gate_logits, float("-inf"))
-            masked_logits.scatter_(dim=-1, index=topk_idx, src=topk_vals)
+            # ---- gating ----
+            # Use sentinel < 0 to mean 'no top-k' so TorchScript never compares None with ints.
+            if self.top_k < 0 or self.top_k >= self.num_experts:
+                # standard dense MoE
+                weights = self.softmax(gate_logits).unsqueeze(1)
+            else:
+                # top-k sparse MoE
+                topk_vals, topk_idx = torch.topk(gate_logits, k=self.top_k, dim=-1)
 
-            weights = self.softmax(masked_logits).unsqueeze(1)
+                masked_logits = torch.full_like(gate_logits, float("-inf"))
+                masked_logits.scatter_(dim=-1, index=topk_idx, src=topk_vals)
+
+                weights = self.softmax(masked_logits).unsqueeze(1)
 
 
-        # cache for PPO losses / logging
-        self._last_gate_weights = weights
+            # cache for PPO losses / logging
+            self._last_gate_weights = weights
 
 
         # weighted sum -> [batch, act_dim]
@@ -167,6 +178,7 @@ class ActorCriticMoE(nn.Module):
         raw_top_k = moe_cfg.get("top_k", -1)
         top_k = -1 if raw_top_k is None else int(raw_top_k)
         use_gate_loss = moe_cfg["use_gate_loss"]
+        use_explicit_expert = moe_cfg["use_explicit_expert"]
         gate_hidden_dims = moe_cfg["gate_hidden_dims"]
 
         self.actor = MoE_net(
@@ -177,7 +189,8 @@ class ActorCriticMoE(nn.Module):
             activation=activation,
             num_experts=num_experts,
             top_k=top_k,
-            use_gate_loss=use_gate_loss
+            use_gate_loss=use_gate_loss,
+            use_explicit_expert=use_explicit_expert
         )
 
         # Actor observation normalization
@@ -197,7 +210,8 @@ class ActorCriticMoE(nn.Module):
             activation=activation,
             num_experts=num_experts,
             top_k=top_k,
-            use_gate_loss=use_gate_loss
+            use_gate_loss=use_gate_loss,
+            use_explicit_expert=use_explicit_expert
         )
 
         # Critic observation normalization
