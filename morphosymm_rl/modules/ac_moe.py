@@ -134,6 +134,24 @@ class MoE_net(nn.Module):
             # weighted sum -> [batch, act_dim]
             return (expert_out * weights).sum(dim=-1)
 
+    def load_balance_loss(self) -> torch.Tensor:
+        """Auxiliary load-balancing loss (Fedus et al., 2022; Shazeer et al., 2017).
+
+        Encourages uniform expert utilization across the batch:
+            L_lb = sum_k (mean_w_k - 1/K)^2
+        where mean_w_k is the batch-average gate weight for expert k.
+
+        Returns:
+            Scalar loss tensor. Zero if no gate weights have been cached yet.
+        """
+        if self._last_gate_weights.numel() == 0:
+            return torch.tensor(0.0)
+        # _last_gate_weights shape: [batch, 1, K]
+        w = self._last_gate_weights.squeeze(1)  # [batch, K]
+        mean_w = w.mean(dim=0)  # [K]
+        return ((mean_w - 1.0 / self.num_experts) ** 2).sum()
+
+
 class ActorCriticMoE(nn.Module):
     """Actor-critic with Mixture-of-Experts policy."""
 
@@ -281,6 +299,13 @@ class ActorCriticMoE(nn.Module):
             return torch.tensor(0.0)
         w = self.actor._last_gate_weights
         return -(w * torch.log(w + 1e-8)).sum(dim=-1).mean()
+
+    def load_balance_loss(self) -> torch.Tensor:
+        """Aggregate load-balancing loss from the actor MoE.
+
+        L_lb = sum_k (mean_w_k - 1/K)^2
+        """
+        return self.actor.load_balance_loss()
 
     def _update_distribution(self, obs: torch.Tensor) -> None:
         if self.state_dependent_std:
