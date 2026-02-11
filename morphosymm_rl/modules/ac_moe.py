@@ -46,6 +46,7 @@ class MoE_net(nn.Module):
         top_k: int = -1,
         use_gate_loss: bool = False,
         use_explicit_expert: bool = False,
+        explicit_expert_epsilon: float = 0.8,
     ):
         super().__init__()
         self.obs_dim = obs_dim
@@ -63,6 +64,7 @@ class MoE_net(nn.Module):
         self.use_gate_loss = use_gate_loss
         
         self.use_explicit_expert = use_explicit_expert
+        self.explicit_expert_epsilon = explicit_expert_epsilon
 
         # experts
         self.experts = nn.ModuleList(
@@ -124,7 +126,7 @@ class MoE_net(nn.Module):
             
             # Use explicit expert selector instead of learned gate
             weights_suggestion = expert_selector.unsqueeze(1)  # [batch, 1, num_experts]
-            epsilon = 0.8
+            epsilon = self.explicit_expert_epsilon
         
             # weighted sum -> [batch, act_dim]
             return (expert_out * (epsilon * weights_suggestion + (1-epsilon) * weights)).sum(dim=-1)
@@ -192,7 +194,8 @@ class ActorCriticMoE(nn.Module):
             num_experts=num_experts,
             top_k=top_k,
             use_gate_loss=use_gate_loss,
-            use_explicit_expert=use_explicit_expert
+            use_explicit_expert=use_explicit_expert,
+            explicit_expert_epsilon=explicit_expert_epsilon
         )
 
         # Actor observation normalization
@@ -213,7 +216,8 @@ class ActorCriticMoE(nn.Module):
             num_experts=num_experts,
             top_k=top_k,
             use_gate_loss=use_gate_loss,
-            use_explicit_expert=use_explicit_expert
+            use_explicit_expert=use_explicit_expert,
+            explicit_expert_epsilon=explicit_expert_epsilon
         )
 
         # Critic observation normalization
