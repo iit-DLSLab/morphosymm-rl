@@ -497,6 +497,10 @@ class PPOSymmDataAugmented:
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
 
+        # MoE expert utilization stats (logged per-expert to detect dead experts)
+        if hasattr(self.policy, "get_expert_stats"):
+            loss_dict.update(self.policy.get_expert_stats())
+
         return loss_dict
 
     def broadcast_parameters(self) -> None:

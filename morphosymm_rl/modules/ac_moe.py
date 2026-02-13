@@ -184,6 +184,46 @@ class MoE_net(nn.Module):
             return ((mean_w - 1.0 / N) ** 2).sum()
 
 
+    def expert_utilization_stats(self) -> dict[str, torch.Tensor]:
+        """Per-expert utilization statistics from the last forward pass.
+
+        Returns a dict with:
+            - ``expert_<i>_usage``: fraction of batch weight assigned to expert i
+              (soft weight for dense routing, hard argmax fraction for sparse).
+            - ``dead_experts``: number of experts with zero hard assignments.
+            - ``expert_usage_max``: max usage across experts (higher = more imbalanced).
+            - ``expert_usage_min``: min usage across experts (zero = dead expert).
+        """
+        stats: dict[str, torch.Tensor] = {}
+        if self._last_gate_weights.numel() == 0:
+            return stats
+
+        N = self.num_experts
+        router_probs = self._last_router_probs  # [batch, K]
+
+        # Hard assignment: which expert wins the argmax per sample
+        expert_indices = router_probs.argmax(dim=-1)  # [batch]
+        hard_counts = torch.zeros(N, device=router_probs.device)
+        hard_counts.scatter_add_(0, expert_indices, torch.ones_like(expert_indices, dtype=router_probs.dtype))
+        hard_fracs = hard_counts / router_probs.shape[0]  # [K]
+
+        # Soft assignment: mean gate weight per expert
+        w = self._last_gate_weights.squeeze(1)  # [batch, K]
+        soft_fracs = w.mean(dim=0)  # [K]
+
+        # Per-expert stats
+        for i in range(N):
+            stats[f"percent_of_expert_{i}_usage"] = hard_fracs[i].detach()
+            stats[f"mean_weight_for_expert_{i}"] = soft_fracs[i].detach()
+
+        # Summary stats
+        stats["dead_experts"] = (hard_counts == 0).sum().float().detach()
+        stats["percent_of_most_used_expert"] = hard_fracs.max().detach()
+        stats["percent_of_least_used_expert"] = hard_fracs.min().detach()
+
+        return stats
+
+
 class ActorCriticMoE(nn.Module):
     """Actor-critic with Mixture-of-Experts policy."""
 
@@ -335,6 +375,14 @@ class ActorCriticMoE(nn.Module):
     def load_balance_loss(self) -> torch.Tensor:
         """Aggregate load-balancing loss from the actor MoE."""
         return self.actor.load_balance_loss()
+
+    def get_expert_stats(self) -> dict[str, float]:
+        """Return per-expert utilization stats for logging (e.g. to wandb).
+
+        Keys are prefixed with ``MoE/`` so they appear in a dedicated group.
+        """
+        raw = self.actor.expert_utilization_stats()
+        return {f"MoE/{k}": v.item() if isinstance(v, torch.Tensor) else v for k, v in raw.items()}
 
     def _update_distribution(self, obs: torch.Tensor) -> None:
         if self.state_dependent_std:
