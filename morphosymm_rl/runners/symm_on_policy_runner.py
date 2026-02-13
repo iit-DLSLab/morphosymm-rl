@@ -24,7 +24,7 @@ from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_callable, resolve_obs_groups
 from rsl_rl.utils.logger import Logger
 
-from morphosymm_rl.modules.ac_symm import ActorCriticSymm
+# from morphosymm_rl.modules.ac_symm import ActorCriticSymm
 from morphosymm_rl.modules.ac_moe import ActorCriticMoE
 from morphosymm_rl.algorithms.ppo_symm_data_augment import PPOSymmDataAugmented
 from morphosymm_rl.algorithms.ppo import PPO
