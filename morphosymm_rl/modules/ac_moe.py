@@ -61,6 +61,8 @@ class MoE_net(nn.Module):
         # sees a consistent attribute type (Tensor) instead of switching from NoneType
         # to Tensor during execution.
         self._last_gate_weights = torch.empty(0)
+        # Full softmax router probabilities (before top-k masking), used for sparse load-balancing loss.
+        self._last_router_probs = torch.empty(0)
         self.use_gate_loss = use_gate_loss
         
         self.use_explicit_expert = use_explicit_expert
@@ -103,11 +105,14 @@ class MoE_net(nn.Module):
         # [batch, K]
         gate_logits = self.gate(x)
 
+        # Full softmax over all experts (before any top-k masking)
+        router_probs = self.softmax(gate_logits)  # [batch, K]
+
         # ---- gating ----
         # Use sentinel < 0 to mean 'no top-k' so TorchScript never compares None with ints.
         if self.top_k < 0 or self.top_k >= self.num_experts:
             # standard dense MoE
-            weights = self.softmax(gate_logits).unsqueeze(1)
+            weights = router_probs.unsqueeze(1)
         else:
             # top-k sparse MoE
             topk_vals, topk_idx = torch.topk(gate_logits, k=self.top_k, dim=-1)
@@ -119,6 +124,7 @@ class MoE_net(nn.Module):
 
         # cache for PPO losses / logging
         self._last_gate_weights = weights
+        self._last_router_probs = router_probs
         
         if(self.use_explicit_expert):
             # Extract expert selectors from last num_experts elements
@@ -135,21 +141,47 @@ class MoE_net(nn.Module):
             return (expert_out * weights).sum(dim=-1)
 
     def load_balance_loss(self) -> torch.Tensor:
-        """Auxiliary load-balancing loss (Fedus et al., 2022; Shazeer et al., 2017).
+        """Auxiliary load-balancing loss that adapts to the routing mode.
 
-        Encourages uniform expert utilization across the batch:
-            L_lb = sum_k (mean_w_k - 1/K)^2
-        where mean_w_k is the batch-average gate weight for expert k.
+        **Sparse routing** (top_k >= 1 and < num_experts):
+            Uses the Switch Transformer formulation (Fedus et al., 2022, Eq. 4-6):
+                L = alpha * N * sum_i(f_i * P_i)
+            where f_i is the fraction of samples whose argmax expert is i (non-differentiable)
+            and P_i is the mean router probability for expert i (differentiable).
+            The product f_i * P_i is minimised under a uniform distribution.
+
+        **Dense routing** (all experts used, top_k < 0 or >= num_experts):
+            Uses squared deviation from uniform:
+                L = sum_k (mean_w_k - 1/K)^2
+            Since every expert contributes (weighted by soft probability), soft weights
+            accurately reflect utilisation and squared deviation is appropriate.
 
         Returns:
             Scalar loss tensor. Zero if no gate weights have been cached yet.
         """
         if self._last_gate_weights.numel() == 0:
             return torch.tensor(0.0)
-        # _last_gate_weights shape: [batch, 1, K]
-        w = self._last_gate_weights.squeeze(1)  # [batch, K]
-        mean_w = w.mean(dim=0)  # [K]
-        return ((mean_w - 1.0 / self.num_experts) ** 2).sum()
+
+        N = self.num_experts
+
+        if self.top_k >= 1 and self.top_k < N:
+            # --- Sparse routing: Switch Transformer loss (Eq. 4-6) ---
+            # router_probs: full softmax probabilities [batch, K]
+            router_probs = self._last_router_probs  # [batch, K]
+            # f_i: fraction of samples dispatched to expert i (hard assignment, non-differentiable)
+            expert_indices = router_probs.argmax(dim=-1)  # [batch]
+            f = torch.zeros(N, device=router_probs.device)
+            f.scatter_add_(0, expert_indices, torch.ones_like(expert_indices, dtype=router_probs.dtype))
+            f = f / router_probs.shape[0]  # [K]
+            # P_i: mean router probability for expert i
+            P = router_probs.mean(dim=0)  # [K]
+            # L = N * sum(f_i * P_i)  (alpha is applied externally in the PPO loss)
+            return N * (f * P).sum()
+        else:
+            # --- Dense routing: squared deviation from uniform ---
+            w = self._last_gate_weights.squeeze(1)  # [batch, K]
+            mean_w = w.mean(dim=0)  # [K]
+            return ((mean_w - 1.0 / N) ** 2).sum()
 
 
 class ActorCriticMoE(nn.Module):
@@ -301,10 +333,7 @@ class ActorCriticMoE(nn.Module):
         return -(w * torch.log(w + 1e-8)).sum(dim=-1).mean()
 
     def load_balance_loss(self) -> torch.Tensor:
-        """Aggregate load-balancing loss from the actor MoE.
-
-        L_lb = sum_k (mean_w_k - 1/K)^2
-        """
+        """Aggregate load-balancing loss from the actor MoE."""
         return self.actor.load_balance_loss()
 
     def _update_distribution(self, obs: torch.Tensor) -> None:
