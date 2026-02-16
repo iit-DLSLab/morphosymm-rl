@@ -63,6 +63,8 @@ class MoE_net(nn.Module):
         self._last_gate_weights = torch.empty(0)
         # Full softmax router probabilities (before top-k masking), used for sparse load-balancing loss.
         self._last_router_probs = torch.empty(0)
+        # Top-k indices for sparse routing (used for utilization stats)
+        self._last_topk_idx = torch.empty(0, dtype=torch.long)
         self.use_gate_loss = use_gate_loss
         
         self.use_explicit_expert = use_explicit_expert
@@ -125,6 +127,10 @@ class MoE_net(nn.Module):
         # cache for PPO losses / logging
         self._last_gate_weights = weights
         self._last_router_probs = router_probs
+        if self.top_k >= 1 and self.top_k < self.num_experts:
+            self._last_topk_idx = topk_idx
+        else:
+            self._last_topk_idx = torch.empty(0, dtype=torch.long)
         
         if(self.use_explicit_expert):
             # Extract expert selectors from last num_experts elements
@@ -188,24 +194,27 @@ class MoE_net(nn.Module):
         """Per-expert utilization statistics from the last forward pass.
 
         Returns a dict with:
-            - ``expert_<i>_usage``: fraction of batch weight assigned to expert i
-              (soft weight for dense routing, hard argmax fraction for sparse).
-            - ``dead_experts``: number of experts with zero hard assignments.
-            - ``expert_usage_max``: max usage across experts (higher = more imbalanced).
-            - ``expert_usage_min``: min usage across experts (zero = dead expert).
+            - ``percent_of_expert_<i>_usage``: fraction of batch samples where expert i is utilized
+            - ``dead_experts``: number of experts with zero utilization.
+            - ``percent_of_most_used_expert``: max utilization across experts.
+            - ``percent_of_least_used_expert``: min utilization across experts.
         """
         stats: dict[str, torch.Tensor] = {}
         if self._last_gate_weights.numel() == 0:
             return stats
 
         N = self.num_experts
-        router_probs = self._last_router_probs  # [batch, K]
+        batch_size = self._last_router_probs.shape[0]
 
-        # Hard assignment: which expert wins the argmax per sample
-        expert_indices = router_probs.argmax(dim=-1)  # [batch]
-        hard_counts = torch.zeros(N, device=router_probs.device)
-        hard_counts.scatter_add_(0, expert_indices, torch.ones_like(expert_indices, dtype=router_probs.dtype))
-        hard_fracs = hard_counts / router_probs.shape[0]  # [K]
+        # Sparse routing: count samples where each expert is in top-k
+        topk_idx = self._last_topk_idx  # [batch, top_k]
+        # Flatten to count occurrences
+        flat_idx = topk_idx.flatten()  # [batch * top_k]
+        utilization_counts = torch.zeros(N, device=topk_idx.device, dtype=topk_idx.dtype)
+        utilization_counts.scatter_add_(0, flat_idx, torch.ones_like(flat_idx))
+        # Since each sample contributes to top_k experts, divide by batch_size * top_k? No.
+        # Fraction of samples where expert is used: utilization_counts / batch_size
+        hard_fracs = utilization_counts.float() / batch_size
 
         # Soft assignment: mean gate weight per expert
         w = self._last_gate_weights.squeeze(1)  # [batch, K]
@@ -217,7 +226,7 @@ class MoE_net(nn.Module):
             stats[f"mean_weight_for_expert_{i}"] = soft_fracs[i].detach()
 
         # Summary stats
-        stats["dead_experts"] = (hard_counts == 0).sum().float().detach()
+        stats["dead_experts"] = (hard_fracs == 0).sum().float().detach()
         stats["percent_of_most_used_expert"] = hard_fracs.max().detach()
         stats["percent_of_least_used_expert"] = hard_fracs.min().detach()
 
