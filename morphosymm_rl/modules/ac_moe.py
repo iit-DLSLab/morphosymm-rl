@@ -115,22 +115,20 @@ class MoE_net(nn.Module):
         if self.top_k < 0 or self.top_k >= self.num_experts:
             # standard dense MoE
             weights = router_probs.unsqueeze(1)
+            # For counting: every expert is used for every sample
+            batch_size = router_probs.shape[0]
+            self._last_topk_idx  = torch.arange(self.num_experts, device=router_probs.device).unsqueeze(0).expand(batch_size, -1)
         else:
             # top-k sparse MoE
             topk_vals, topk_idx = torch.topk(gate_logits, k=self.top_k, dim=-1)
-
             masked_logits = torch.full_like(gate_logits, float("-inf"))
             masked_logits.scatter_(dim=-1, index=topk_idx, src=topk_vals)
-
             weights = self.softmax(masked_logits).unsqueeze(1)
+            self._last_topk_idx = topk_idx
 
         # cache for PPO losses / logging
         self._last_gate_weights = weights
         self._last_router_probs = router_probs
-        if self.top_k >= 1 and self.top_k < self.num_experts:
-            self._last_topk_idx = topk_idx
-        else:
-            self._last_topk_idx = torch.empty(0, dtype=torch.long)
         
         if(self.use_explicit_expert):
             # Extract expert selectors from last num_experts elements
