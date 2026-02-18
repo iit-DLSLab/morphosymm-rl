@@ -193,7 +193,7 @@ class MoE_net(nn.Module):
         N = self.num_experts
         batch_size = self._last_gate_weights.shape[0]
 
-        if self.top_k >= 1 or self.top_k >= self.num_experts:
+        if self.top_k >= 1 and self.top_k <= self.num_experts:
             topk_idx = self.top_k
         else:
             topk_idx = torch.arange(N, device=self._last_gate_weights.device).unsqueeze(0).expand(batch_size, -1)
