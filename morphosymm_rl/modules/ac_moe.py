@@ -45,6 +45,7 @@ class MoE_net(nn.Module):
         num_experts: int = 4,
         top_k: int = -1,
         use_gate_loss: bool = False,
+        use_load_balance_loss: bool = False,
         use_explicit_expert: bool = False,
         explicit_expert_epsilon: float = 0.8,
     ):
@@ -62,6 +63,7 @@ class MoE_net(nn.Module):
         # to Tensor during execution.
         self._last_gate_weights = torch.empty(0)
         self.use_gate_loss = use_gate_loss
+        self.use_load_balance_loss = use_load_balance_loss
         
         self.use_explicit_expert = use_explicit_expert
         self.explicit_expert_epsilon = explicit_expert_epsilon
@@ -134,6 +136,93 @@ class MoE_net(nn.Module):
             # weighted sum -> [batch, act_dim]
             return (expert_out * weights).sum(dim=-1)
 
+
+    def load_balance_loss(self) -> torch.Tensor:
+        """Auxiliary load-balancing loss that adapts to the routing mode.
+
+        **Sparse routing** (top_k >= 1 and < num_experts):
+            Uses the Switch Transformer formulation (Fedus et al., 2022, Eq. 4-6):
+                L = alpha * N * sum_i(f_i * P_i)
+            where f_i is the fraction of samples whose argmax expert is i (non-differentiable)
+            and P_i is the mean router probability for expert i (differentiable).
+            The product f_i * P_i is minimised under a uniform distribution.
+
+        **Dense routing** (all experts used, top_k < 0 or >= num_experts):
+            Uses squared deviation from uniform:
+                L = sum_k (mean_w_k - 1/K)^2
+            Since every expert contributes (weighted by soft probability), soft weights
+            accurately reflect utilisation and squared deviation is appropriate.
+
+        Returns:
+            Scalar loss tensor. Zero if no gate weights have been cached yet.
+        """
+
+        N = self.num_experts
+
+        if self.top_k >= 1 or self.top_k >= self.num_experts:
+            # --- Sparse routing: Switch Transformer loss (Eq. 4-6) ---
+            # router_probs: full softmax probabilities [batch, K]
+            router_probs = self._last_gate_weights.squeeze(1)  # [batch, K]
+            # f_i: fraction of samples dispatched to expert i (hard assignment, non-differentiable)
+            expert_indices = router_probs.argmax(dim=-1)  # [batch]
+            f = torch.zeros(N, device=router_probs.device)
+            f.scatter_add_(0, expert_indices, torch.ones_like(expert_indices, dtype=router_probs.dtype))
+            f = f / router_probs.shape[0]  # [K]
+            # P_i: mean router probability for expert i
+            P = router_probs.mean(dim=0)  # [K]
+            # L = N * sum(f_i * P_i)  (alpha is applied externally in the PPO loss)
+            return N * (f * P).sum()
+        else:
+            # --- Dense routing: squared deviation from uniform ---
+            w = self._last_gate_weights.squeeze(1)  # [batch, K]
+            mean_w = w.mean(dim=0)  # [K]
+            return ((mean_w - 1.0 / N) ** 2).sum()
+
+
+    def expert_utilization_stats(self) -> dict[str, torch.Tensor]:
+        """Per-expert utilization statistics from the last forward pass.
+
+        Returns a dict with:
+            - ``percent_of_expert_<i>_usage``: fraction of batch samples where expert i is utilized
+            - ``dead_experts``: number of experts with zero utilization.
+            - ``percent_of_most_used_expert``: max utilization across experts.
+            - ``percent_of_least_used_expert``: min utilization across experts.
+        """
+        stats: dict[str, torch.Tensor] = {}
+
+        N = self.num_experts
+        batch_size = self._last_gate_weights.shape[0]
+
+        if self.top_k >= 1 or self.top_k >= self.num_experts:
+            topk_idx = self.top_k
+        else:
+            topk_idx = torch.arange(N, device=self._last_gate_weights.device).unsqueeze(0).expand(batch_size, -1)
+        
+        # Flatten to count occurrences
+        flat_idx = topk_idx.flatten()  # [batch * top_k]
+        utilization_counts = torch.zeros(N, device=topk_idx.device, dtype=topk_idx.dtype)
+        utilization_counts.scatter_add_(0, flat_idx, torch.ones_like(flat_idx))
+        # Since each sample contributes to top_k experts, divide by batch_size * top_k? No.
+        # Fraction of samples where expert is used: utilization_counts / batch_size
+        hard_fracs = utilization_counts.float() / batch_size
+
+        # Soft assignment: mean gate weight per expert
+        w = self._last_gate_weights.squeeze(1)  # [batch, K]
+        soft_fracs = w.mean(dim=0)  # [K]
+
+        # Per-expert stats
+        for i in range(N):
+            stats[f"percent_of_expert_{i}_usage"] = hard_fracs[i].detach()
+            stats[f"mean_weight_for_expert_{i}"] = soft_fracs[i].detach()
+
+        # Summary stats
+        stats["dead_experts"] = (hard_fracs == 0).sum().float().detach()
+        stats["percent_of_most_used_expert"] = hard_fracs.max().detach()
+        stats["percent_of_least_used_expert"] = hard_fracs.min().detach()
+
+        return stats
+
+
 class ActorCriticMoE(nn.Module):
     """Actor-critic with Mixture-of-Experts policy."""
 
@@ -181,9 +270,11 @@ class ActorCriticMoE(nn.Module):
         raw_top_k = moe_cfg.get("top_k", -1)
         top_k = -1 if raw_top_k is None else int(raw_top_k)
         use_gate_loss = moe_cfg["use_gate_loss"]
+        use_load_balance_loss = moe_cfg["use_load_balance_loss"]
         use_explicit_expert = moe_cfg["use_explicit_expert"]
         explicit_expert_epsilon = moe_cfg["explicit_expert_epsilon"]
         gate_hidden_dims = moe_cfg["gate_hidden_dims"]
+        self.log_expert_stats = moe_cfg["log_expert_stats"]
 
         self.actor = MoE_net(
             obs_dim=num_actor_obs,
@@ -194,6 +285,7 @@ class ActorCriticMoE(nn.Module):
             num_experts=num_experts,
             top_k=top_k,
             use_gate_loss=use_gate_loss,
+            use_load_balance_loss=use_load_balance_loss,
             use_explicit_expert=use_explicit_expert,
             explicit_expert_epsilon=explicit_expert_epsilon
         )
@@ -216,6 +308,7 @@ class ActorCriticMoE(nn.Module):
             num_experts=num_experts,
             top_k=top_k,
             use_gate_loss=use_gate_loss,
+            use_load_balance_loss=use_load_balance_loss,
             use_explicit_expert=use_explicit_expert,
             explicit_expert_epsilon=explicit_expert_epsilon
         )
@@ -276,11 +369,20 @@ class ActorCriticMoE(nn.Module):
         """
         Mean gate entropy from last forward pass (useful for PPO regularization)
         """
-        # If empty sentinel, return zero entropy
-        if self.actor._last_gate_weights.numel() == 0:
-            return torch.tensor(0.0)
         w = self.actor._last_gate_weights
         return -(w * torch.log(w + 1e-8)).sum(dim=-1).mean()
+
+    def load_balance_loss(self) -> torch.Tensor:
+        """Aggregate load-balancing loss from the actor MoE."""
+        return self.actor.load_balance_loss()
+
+    def get_expert_stats(self) -> dict[str, float]:
+        """Return per-expert utilization stats for logging (e.g. to wandb).
+
+        Keys are prefixed with ``MoE/`` so they appear in a dedicated group.
+        """
+        raw = self.actor.expert_utilization_stats()
+        return {f"MoE/{k}": v.item() if isinstance(v, torch.Tensor) else v for k, v in raw.items()}
 
     def _update_distribution(self, obs: torch.Tensor) -> None:
         if self.state_dependent_std:

@@ -364,6 +364,12 @@ class PPO:
                 gate_entropy_coef = 0.0001
                 loss -= gate_entropy_coef * gate_entropy
 
+            # Load-balancing auxiliary loss (Fedus et al., 2022)
+            if hasattr(self.policy, "use_load_balance_loss") and self.policy.use_load_balance_loss:
+                lb_loss = self.policy.load_balance_loss()
+                load_balance_coef = 0.0001
+                loss += load_balance_coef * lb_loss
+
             # Compute the gradients for PPO
             self.optimizer.zero_grad()
             loss.backward()
@@ -417,6 +423,10 @@ class PPO:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
+
+        # MoE expert utilization stats (logged per-expert to detect dead experts)
+        if hasattr(self.policy, "log_expert_stats") and self.policy.log_expert_stats:
+            loss_dict.update(self.policy.get_expert_stats())
 
         return loss_dict
 
