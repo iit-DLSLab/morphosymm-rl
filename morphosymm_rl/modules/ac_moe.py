@@ -159,7 +159,7 @@ class MoE_net(nn.Module):
 
         N = self.num_experts
 
-        if self.top_k >= 1 or self.top_k >= self.num_experts:
+        if self.top_k >= 1 and self.top_k <= self.num_experts:
             # --- Sparse routing: Switch Transformer loss (Eq. 4-6) ---
             # router_probs: full softmax probabilities [batch, K]
             router_probs = self._last_gate_weights.squeeze(1)  # [batch, K]
