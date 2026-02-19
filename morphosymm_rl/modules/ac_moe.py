@@ -66,7 +66,7 @@ class MoE_net(nn.Module):
         self.use_gate_loss = use_gate_loss
         self.use_load_balance_loss = use_load_balance_loss
         
-        self.use_explicit_expert = use_explicit_expert
+        self.use_explicit_expert = -1 if not use_explicit_expert else 1
         self.explicit_expert_epsilon = explicit_expert_epsilon
 
         # Separate NN Experts
@@ -141,7 +141,7 @@ class MoE_net(nn.Module):
         # cache for PPO losses / logging
         self._last_gate_weights = weights
         
-        if(self.use_explicit_expert):
+        if(self.use_explicit_expert == 1):
             # Extract expert selectors from last num_experts elements
             expert_selector = x[:, -self.num_experts:]  # [batch, num_experts]
             
