@@ -62,6 +62,7 @@ class MoE_net(nn.Module):
         # sees a consistent attribute type (Tensor) instead of switching from NoneType
         # to Tensor during execution.
         self._last_gate_weights = torch.empty(0)
+        self._last_unmasked_gate_weights = torch.empty(0)
         self.use_gate_loss = use_gate_loss
         self.use_load_balance_loss = use_load_balance_loss
         
@@ -111,6 +112,7 @@ class MoE_net(nn.Module):
             # standard dense MoE
             weights = self.softmax(gate_logits).unsqueeze(1)
         else:
+            self._last_unmasked_gate_weights = self.softmax(gate_logits)  # [batch, K]
             # top-k sparse MoE
             topk_vals, topk_idx = torch.topk(gate_logits, k=self.top_k, dim=-1)
 
@@ -162,7 +164,9 @@ class MoE_net(nn.Module):
         if self.top_k >= 1 and self.top_k <= self.num_experts:
             # --- Sparse routing: Switch Transformer loss (Eq. 4-6) ---
             # router_probs: full softmax probabilities [batch, K]
-            router_probs = self._last_gate_weights.squeeze(1)  # [batch, K]
+            router_probs = self._last_unmasked_gate_weights.squeeze(1)  # [batch, K]
+            #router_probs = self._last_gate_weights.squeeze(1)  # [batch, K]
+            
             # f_i: fraction of samples dispatched to expert i (hard assignment, non-differentiable)
             expert_indices = router_probs.argmax(dim=-1)  # [batch]
             f = torch.zeros(N, device=router_probs.device)
@@ -194,7 +198,7 @@ class MoE_net(nn.Module):
         batch_size = self._last_gate_weights.shape[0]
 
         if self.top_k >= 1 and self.top_k <= self.num_experts:
-            topk_idx = self.top_k
+            topk_idx = self._last_gate_weights.topk(k=self.top_k, dim=-1).indices  # [batch, K]
         else:
             topk_idx = torch.arange(N, device=self._last_gate_weights.device).unsqueeze(0).expand(batch_size, -1)
         
