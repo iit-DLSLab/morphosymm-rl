@@ -69,10 +69,24 @@ class MoE_net(nn.Module):
         self.use_explicit_expert = use_explicit_expert
         self.explicit_expert_epsilon = explicit_expert_epsilon
 
-        # experts
+        # Separate NN Experts
+        #self.experts = nn.ModuleList(
+        #    [MLP_net(obs_dim, hidden_dims, act_dim, act) for _ in range(num_experts)]
+        #)
+
+        # Shared trunk + separate expert heads
+        shared_layers = [nn.Linear(obs_dim, hidden_dims[0]), act]
+        for i in range(len(hidden_dims) - 1):
+            shared_layers += [nn.Linear(hidden_dims[i], hidden_dims[i + 1]), act]
+
+        self.shared_backbone = nn.Sequential(*shared_layers)
+        last_dim = hidden_dims[-1]
+
+        # single big linear for all experts
         self.experts = nn.ModuleList(
-            [MLP_net(obs_dim, hidden_dims, act_dim, act) for _ in range(num_experts)]
+            [nn.Linear(last_dim, act_dim) for _ in range(num_experts)]
         )
+
 
         # gating network
         gate_layers = []
@@ -101,7 +115,10 @@ class MoE_net(nn.Module):
         """
 
         # [batch, act_dim, K]
-        expert_out = torch.stack([e(x) for e in self.experts], dim=-1)
+        features = self.shared_backbone(x)
+        expert_out = torch.stack([e(features) for e in self.experts], dim=-1)
+
+        #expert_out = torch.stack([e(x) for e in self.experts], dim=-1)
 
         # [batch, K]
         gate_logits = self.gate(x)
