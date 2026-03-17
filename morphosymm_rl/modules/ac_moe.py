@@ -57,6 +57,7 @@ class MoE_net(nn.Module):
         # Use an integer sentinel (-1) for 'no top-k' to avoid Optional/None comparisons
         # which break TorchScript. Store as int.
         self.top_k = -1 if top_k is None else int(top_k)
+        self.is_sparse = 0 < self.top_k < self.num_experts
         act = resolve_nn_activation(activation)
 
         # Store last gate weights as a tensor sentinel (empty tensor) so TorchScript
@@ -93,7 +94,7 @@ class MoE_net(nn.Module):
 
         # gating network
         gate_layers = []
-        last_dim = obs_dim
+        last_dim = hidden_dims[-1] if self.use_shared_backbone else obs_dim
         gate_hidden_dims = gate_hidden_dims or []
         for h in gate_hidden_dims:
             gate_layers += [nn.Linear(last_dim, h), act]
@@ -125,13 +126,17 @@ class MoE_net(nn.Module):
             expert_out = torch.stack([e(x) for e in self.experts], dim=-1)
 
         # [batch, K]
-        gate_logits = self.gate(x)
+        gate_input = features if self.use_shared_backbone else x
+        gate_logits = self.gate(gate_input)
 
-        # ---- gating ----
-        # Use sentinel < 0 to mean 'no top-k' so TorchScript never compares None with ints.
-        if self.top_k < 0 or self.top_k >= self.num_experts:
+        full_weights = self.softmax(gate_logits)
+        # cache for PPO losses / logging
+        self._last_unmasked_gate_weights = full_weights
+
+        # ---- weights for expert combination ----
+        if self.is_sparse == False:
             # standard dense MoE
-            weights = self.softmax(gate_logits).unsqueeze(1)
+            weights = full_weights.unsqueeze(1)
         else:
             self._last_unmasked_gate_weights = self.softmax(gate_logits)  # [batch, K]
             # top-k sparse MoE
@@ -141,9 +146,7 @@ class MoE_net(nn.Module):
             masked_logits.scatter_(dim=-1, index=topk_idx, src=topk_vals)
 
             weights = self.softmax(masked_logits).unsqueeze(1)
-
-        # cache for PPO losses / logging
-        self._last_gate_weights = weights
+            
         
         if(self.use_explicit_expert):
             # Extract expert selectors from last num_experts elements
@@ -152,9 +155,11 @@ class MoE_net(nn.Module):
             # Use explicit expert selector instead of learned gate
             weights_suggestion = expert_selector.unsqueeze(1)  # [batch, 1, num_experts]
             epsilon = self.explicit_expert_epsilon
-        
+
+            final_weights = epsilon * weights_suggestion + (1 - epsilon) * weights
+            final_weights = final_weights / (final_weights.sum(dim=-1, keepdim=True) + 1e-8)
             # weighted sum -> [batch, act_dim]
-            return (expert_out * (epsilon * weights_suggestion + (1-epsilon) * weights)).sum(dim=-1)
+            return (expert_out * final_weights).sum(dim=-1)
         else:
             # weighted sum -> [batch, act_dim]
             return (expert_out * weights).sum(dim=-1)
@@ -182,7 +187,7 @@ class MoE_net(nn.Module):
 
         N = self.num_experts
 
-        if self.top_k >= 1 and self.top_k <= self.num_experts:
+        if self.is_sparse:
             # --- Sparse routing: Switch Transformer loss (Eq. 4-6) ---
             # router_probs: full softmax probabilities [batch, K]
             router_probs = self._last_unmasked_gate_weights.squeeze(1)  # [batch, K]
@@ -218,7 +223,7 @@ class MoE_net(nn.Module):
         N = self.num_experts
         batch_size = self._last_gate_weights.shape[0]
 
-        if self.top_k >= 1 and self.top_k <= self.num_experts:
+        if self.is_sparse:
             topk_idx = self._last_gate_weights.topk(k=self.top_k, dim=-1).indices  # [batch, K]
         else:
             topk_idx = torch.arange(N, device=self._last_gate_weights.device).unsqueeze(0).expand(batch_size, -1)
@@ -325,8 +330,8 @@ class ActorCriticMoE(nn.Module):
             self.actor_obs_normalizer = torch.nn.Identity()
 
         # Critic
-        #self.critic = MLP_net(num_critic_obs, critic_hidden_dims, 1, act)
-        self.critic = MoE_net(
+        self.critic = MLP_net(num_critic_obs, critic_hidden_dims, 1, act)
+        """self.critic = MoE_net(
             obs_dim=num_critic_obs,
             act_dim=1,
             hidden_dims=critic_hidden_dims,
@@ -339,7 +344,7 @@ class ActorCriticMoE(nn.Module):
             use_explicit_expert=use_explicit_expert,
             explicit_expert_epsilon=explicit_expert_epsilon,
             use_shared_backbone=use_shared_backbone
-        )
+        )"""
 
         # Critic observation normalization
         self.critic_obs_normalization = critic_obs_normalization
