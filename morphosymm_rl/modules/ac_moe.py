@@ -72,35 +72,65 @@ class MoE_net(nn.Module):
         self.explicit_expert_epsilon = explicit_expert_epsilon
 
         self.use_shared_backbone = use_shared_backbone
+        self.use_shared_head = True
 
-        if(self.use_shared_backbone):
-            # Shared trunk + separate expert heads
+        
+        if(self.use_shared_head):
+            # Shared trunk + single shared head
             shared_layers = [nn.Linear(obs_dim, hidden_dims[0]), act]
-            for i in range(len(hidden_dims) - 1):
+            for i in range(len(hidden_dims) - 2):
                 shared_layers += [nn.Linear(hidden_dims[i], hidden_dims[i + 1]), act]
 
             self.shared_backbone = nn.Sequential(*shared_layers)
-            last_dim = hidden_dims[-1]
+            last_dim = hidden_dims[-2]
 
             # single big linear for all experts
             self.experts = nn.ModuleList(
-                [nn.Linear(last_dim, act_dim) for _ in range(num_experts)]
-            )
-        else:
-            # Separate NN Experts
-            self.experts = nn.ModuleList(
-                [MLP_net(obs_dim, hidden_dims, act_dim, act) for _ in range(num_experts)]
+                [nn.Linear(last_dim, hidden_dims[-1]) for _ in range(num_experts)]
             )
 
-        # gating network
-        gate_layers = []
-        last_dim = hidden_dims[-1] if self.use_shared_backbone else obs_dim
-        gate_hidden_dims = gate_hidden_dims or []
-        for h in gate_hidden_dims:
-            gate_layers += [nn.Linear(last_dim, h), act]
-            last_dim = h
-        gate_layers.append(nn.Linear(last_dim, num_experts))
-        self.gate = nn.Sequential(*gate_layers)
+            # gating network
+            gate_layers = []
+            gate_hidden_dims = gate_hidden_dims or []
+            for h in gate_hidden_dims:
+                gate_layers += [nn.Linear(last_dim, h), act]
+                last_dim = h
+            gate_layers.append(nn.Linear(last_dim, num_experts))
+            self.gate = nn.Sequential(*gate_layers)
+
+            self.softmax = nn.Softmax(dim=-1)  # ONNX-friendly
+
+            self.shared_head = nn.Linear(hidden_dims[-1], act_dim)
+        
+        else:
+            if(self.use_shared_backbone):
+                # Shared trunk + separate expert heads
+                shared_layers = [nn.Linear(obs_dim, hidden_dims[0]), act]
+                for i in range(len(hidden_dims) - 1):
+                    shared_layers += [nn.Linear(hidden_dims[i], hidden_dims[i + 1]), act]
+
+                self.shared_backbone = nn.Sequential(*shared_layers)
+                last_dim = hidden_dims[-1]
+
+                # single big linear for all experts
+                self.experts = nn.ModuleList(
+                    [nn.Linear(last_dim, act_dim) for _ in range(num_experts)]
+                )
+            else:
+                # Separate NN Experts
+                self.experts = nn.ModuleList(
+                    [MLP_net(obs_dim, hidden_dims, act_dim, act) for _ in range(num_experts)]
+                )
+
+            # gating network
+            gate_layers = []
+            last_dim = hidden_dims[-1] if self.use_shared_backbone else obs_dim
+            gate_hidden_dims = gate_hidden_dims or []
+            for h in gate_hidden_dims:
+                gate_layers += [nn.Linear(last_dim, h), act]
+                last_dim = h
+            gate_layers.append(nn.Linear(last_dim, num_experts))
+            self.gate = nn.Sequential(*gate_layers)
 
         self.softmax = nn.Softmax(dim=-1)  # ONNX-friendly
 
@@ -119,14 +149,18 @@ class MoE_net(nn.Module):
         """
 
         # [batch, act_dim, K]
-        if(self.use_shared_backbone):
+        if(self.use_shared_backbone or self.use_shared_head):
             features = self.shared_backbone(x)
             expert_out = torch.stack([e(features) for e in self.experts], dim=-1)
+            gate_input = features
         else:
             expert_out = torch.stack([e(x) for e in self.experts], dim=-1)
 
         # [batch, K]
-        gate_input = features if self.use_shared_backbone else x
+        if(self.use_shared_backbone or self.use_shared_head):
+            gate_input = features 
+        else:
+            gate_input = x
         gate_logits = self.gate(gate_input)
 
         full_weights = self.softmax(gate_logits)
@@ -147,7 +181,7 @@ class MoE_net(nn.Module):
 
             weights = self.softmax(masked_logits).unsqueeze(1)
             
-        
+        # ---- final output ----
         if(self.use_explicit_expert):
             # Extract expert selectors from last num_experts elements
             expert_selector = x[:, -self.num_experts:]  # [batch, num_experts]
@@ -160,6 +194,10 @@ class MoE_net(nn.Module):
             final_weights = final_weights / (final_weights.sum(dim=-1, keepdim=True) + 1e-8)
             # weighted sum -> [batch, act_dim]
             return (expert_out * final_weights).sum(dim=-1)
+
+        elif(self.use_shared_head):
+            return self.shared_head((expert_out * weights).sum(dim=-1))
+
         else:
             # weighted sum -> [batch, act_dim]
             return (expert_out * weights).sum(dim=-1)
