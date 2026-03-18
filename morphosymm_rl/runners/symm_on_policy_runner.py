@@ -44,7 +44,10 @@ class SymmOnPolicyRunner:
         self.morphologycal_symmetries_cfg = train_cfg["morphologycal_symmetries_cfg"]
 
         # Mixture of Expert configuration
-        self.moe_cfg = train_cfg["moe_cfg"]
+        if hasattr(train_cfg, "moe_cfg"):
+            self.moe_cfg = train_cfg["moe_cfg"]
+        else:
+            self.moe_cfg = None
 
         # Setup multi-GPU training if enabled
         self._configure_multi_gpu()
