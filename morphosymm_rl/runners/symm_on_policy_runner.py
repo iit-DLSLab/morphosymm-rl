@@ -43,8 +43,8 @@ class SymmOnPolicyRunner:
         # Morphological symmetries configuration
         self.morphologycal_symmetries_cfg = train_cfg["morphologycal_symmetries_cfg"]
 
-        # Mixture of Expert configuration
-        if hasattr(train_cfg, "moe_cfg"):
+        # Mixture of Expert 
+        if "moe_cfg" in train_cfg:
             self.moe_cfg = train_cfg["moe_cfg"]
         else:
             self.moe_cfg = None
