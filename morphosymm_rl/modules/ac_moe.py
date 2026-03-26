@@ -244,7 +244,9 @@ class MoE_net(nn.Module):
             # --- Dense routing: squared deviation from uniform ---
             w = self._last_gate_weights.squeeze(1)  # [batch, K]
             mean_w = w.mean(dim=0)  # [K]
-            return ((mean_w - 1.0 / N) ** 2).sum()
+            uniform = torch.full_like(mean_w, 1.0 / N)
+            return (mean_w * (mean_w / uniform).log()).sum()
+            #return ((mean_w - 1.0 / N) ** 2).sum()
 
 
     def expert_utilization_stats(self) -> dict[str, torch.Tensor]:
