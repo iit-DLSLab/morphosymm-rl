@@ -47,8 +47,7 @@ class MoE_net(nn.Module):
         use_gate_loss: bool = False,
         use_load_balance_loss: bool = False,
         use_explicit_expert: bool = False,
-        explicit_expert_epsilon: float = 0.8,
-        use_shared_backbone: bool = True,
+        use_shared_layers="None",
     ):
         super().__init__()
         self.obs_dim = obs_dim
@@ -69,13 +68,11 @@ class MoE_net(nn.Module):
         self.use_load_balance_loss = use_load_balance_loss
         
         self.use_explicit_expert = use_explicit_expert
-        self.explicit_expert_epsilon = explicit_expert_epsilon
 
-        self.use_shared_backbone = use_shared_backbone
-        self.use_shared_head = True
+        self.use_shared_backbone = use_shared_layers == "backbone"
+        self.use_shared_backbone_and_head = use_shared_layers == "backbone+head"
 
-        
-        if(self.use_shared_head):
+        if(self.use_shared_backbone_and_head):
             # Shared trunk + single shared head
             shared_layers = [nn.Linear(obs_dim, hidden_dims[0]), act]
             for i in range(len(hidden_dims) - 2):
@@ -89,6 +86,31 @@ class MoE_net(nn.Module):
                 [nn.Linear(last_dim, hidden_dims[-1]) for _ in range(num_experts)]
             )
 
+            self.shared_head = nn.Linear(hidden_dims[-1], act_dim)
+        
+        elif(self.use_shared_backbone):
+            # Shared trunk + separate expert heads
+            shared_layers = [nn.Linear(obs_dim, hidden_dims[0]), act]
+            for i in range(len(hidden_dims) - 1):
+                shared_layers += [nn.Linear(hidden_dims[i], hidden_dims[i + 1]), act]
+
+            self.shared_backbone = nn.Sequential(*shared_layers)
+            last_dim = hidden_dims[-1]
+
+            # single big linear for all experts
+            self.experts = nn.ModuleList(
+                [nn.Linear(last_dim, act_dim) for _ in range(num_experts)]
+            )
+        
+        else:
+            # Separate NN Experts
+            last_dim =  obs_dim
+            self.experts = nn.ModuleList(
+                [MLP_net(obs_dim, hidden_dims, act_dim, act) for _ in range(num_experts)]
+            )
+
+
+        if(self.use_explicit_expert == False):
             # gating network
             gate_layers = []
             gate_hidden_dims = gate_hidden_dims or []
@@ -100,45 +122,13 @@ class MoE_net(nn.Module):
 
             self.softmax = nn.Softmax(dim=-1)  # ONNX-friendly
 
-            self.shared_head = nn.Linear(hidden_dims[-1], act_dim)
-        
-        else:
-            if(self.use_shared_backbone):
-                # Shared trunk + separate expert heads
-                shared_layers = [nn.Linear(obs_dim, hidden_dims[0]), act]
-                for i in range(len(hidden_dims) - 1):
-                    shared_layers += [nn.Linear(hidden_dims[i], hidden_dims[i + 1]), act]
-
-                self.shared_backbone = nn.Sequential(*shared_layers)
-                last_dim = hidden_dims[-1]
-
-                # single big linear for all experts
-                self.experts = nn.ModuleList(
-                    [nn.Linear(last_dim, act_dim) for _ in range(num_experts)]
-                )
-            else:
-                # Separate NN Experts
-                self.experts = nn.ModuleList(
-                    [MLP_net(obs_dim, hidden_dims, act_dim, act) for _ in range(num_experts)]
-                )
-
-            # gating network
-            gate_layers = []
-            last_dim = hidden_dims[-1] if self.use_shared_backbone else obs_dim
-            gate_hidden_dims = gate_hidden_dims or []
-            for h in gate_hidden_dims:
-                gate_layers += [nn.Linear(last_dim, h), act]
-                last_dim = h
-            gate_layers.append(nn.Linear(last_dim, num_experts))
-            self.gate = nn.Sequential(*gate_layers)
-
-        self.softmax = nn.Softmax(dim=-1)  # ONNX-friendly
 
     def __getitem__(self, idx: int):
         """Allow indexing into the MoE to get the underlying expert module
         (keeps compatibility with code doing `actor[0]`).
         """
         return self.experts[idx]
+
 
     def forward(self, x: torch.Tensor, return_gate: bool = False) -> torch.Tensor:
         """
@@ -149,53 +139,51 @@ class MoE_net(nn.Module):
         """
 
         # [batch, act_dim, K]
-        if(self.use_shared_backbone or self.use_shared_head):
+        if(self.use_shared_backbone or self.use_shared_backbone_and_head):
             features = self.shared_backbone(x)
             expert_out = torch.stack([e(features) for e in self.experts], dim=-1)
             gate_input = features
+        
         else:
             expert_out = torch.stack([e(x) for e in self.experts], dim=-1)
-
-        # [batch, K]
-        if(self.use_shared_backbone or self.use_shared_head):
-            gate_input = features 
-        else:
             gate_input = x
-        gate_logits = self.gate(gate_input)
-
-        full_weights = self.softmax(gate_logits)
-        # cache for PPO losses / logging
-        self._last_unmasked_gate_weights = full_weights
 
         # ---- weights for expert combination ----
-        if self.is_sparse == False:
-            # standard dense MoE
-            weights = full_weights.unsqueeze(1)
-        else:
-            self._last_unmasked_gate_weights = self.softmax(gate_logits)  # [batch, K]
-            # top-k sparse MoE
-            topk_vals, topk_idx = torch.topk(gate_logits, k=self.top_k, dim=-1)
-
-            masked_logits = torch.full_like(gate_logits, float("-inf"))
-            masked_logits.scatter_(dim=-1, index=topk_idx, src=topk_vals)
-
-            weights = self.softmax(masked_logits).unsqueeze(1)
-            
-        # ---- final output ----
         if(self.use_explicit_expert):
-            # Extract expert selectors from last num_experts elements
-            expert_selector = x[:, -self.num_experts:]  # [batch, num_experts]
+            # Extract expert selector index from the last feature (float in [0, N-1])
+            selector_vals = x[:, -1].long().clamp(0, self.num_experts - 1)  # [batch]
+
+            # Build one-hot suggestions: [batch, num_experts]
+            weights_suggestion = torch.zeros(x.shape[0], self.num_experts, device=x.device, dtype=full_weights.dtype)
+            weights_suggestion.scatter_(1, selector_vals.unsqueeze(1), 1.0)
+            # [batch, 1, num_experts]
+            weights = weights_suggestion.unsqueeze(1)
+
+        else:
+            gate_logits = self.gate(gate_input)
+
+            if self.is_sparse == False:
+                # standard dense MoE
+                full_weights = self.softmax(gate_logits)
+                weights = full_weights.unsqueeze(1)
+        
+            else:
+                self._last_unmasked_gate_weights = self.softmax(gate_logits)  # [batch, K]
+                # top-k sparse MoE
+                topk_vals, topk_idx = torch.topk(gate_logits, k=self.top_k, dim=-1)
+
+                masked_logits = torch.full_like(gate_logits, float("-inf"))
+                masked_logits.scatter_(dim=-1, index=topk_idx, src=topk_vals)
+
+                full_weights = self.softmax(masked_logits)
+                weights = self.softmax(masked_logits).unsqueeze(1)
             
-            # Use explicit expert selector instead of learned gate
-            weights_suggestion = expert_selector.unsqueeze(1)  # [batch, 1, num_experts]
-            epsilon = self.explicit_expert_epsilon
+            # cache for PPO losses / logging
+            self._last_unmasked_gate_weights = full_weights
 
-            final_weights = epsilon * weights_suggestion + (1 - epsilon) * weights
-            final_weights = final_weights / (final_weights.sum(dim=-1, keepdim=True) + 1e-8)
-            # weighted sum -> [batch, act_dim]
-            return (expert_out * final_weights).sum(dim=-1)
-
-        elif(self.use_shared_head):
+                
+        # ---- final output ----
+        if(self.use_shared_backbone_and_head):
             return self.shared_head((expert_out * weights).sum(dim=-1))
 
         else:
@@ -335,32 +323,33 @@ class ActorCriticMoE(nn.Module):
             print("Not supported yet., switching to off")
             self.state_dependent_std = False
 
-
+        self.who = moe_cfg["who"]
         num_experts = moe_cfg["num_experts"]
         raw_top_k = moe_cfg.get("top_k", -1)
         top_k = -1 if raw_top_k is None else int(raw_top_k)
         use_gate_loss = moe_cfg["use_gate_loss"]
         use_load_balance_loss = moe_cfg["use_load_balance_loss"]
         use_explicit_expert = moe_cfg["use_explicit_expert"]
-        explicit_expert_epsilon = moe_cfg["explicit_expert_epsilon"]
         gate_hidden_dims = moe_cfg["gate_hidden_dims"]
+        use_shared_layers = moe_cfg["use_shared_layers"]
         self.log_expert_stats = moe_cfg["log_expert_stats"]
-        use_shared_backbone = moe_cfg["use_shared_backbone"]
 
-        self.actor = MoE_net(
-            obs_dim=num_actor_obs,
-            act_dim=num_actions,
-            hidden_dims=actor_hidden_dims,
-            gate_hidden_dims=gate_hidden_dims, 
-            activation=activation,
-            num_experts=num_experts,
-            top_k=top_k,
-            use_gate_loss=use_gate_loss,
-            use_load_balance_loss=use_load_balance_loss,
-            use_explicit_expert=use_explicit_expert,
-            explicit_expert_epsilon=explicit_expert_epsilon,
-            use_shared_backbone=use_shared_backbone
-        )
+        if("actor" in self.who):
+            self.actor = MoE_net(
+                obs_dim=num_actor_obs,
+                act_dim=num_actions,
+                hidden_dims=actor_hidden_dims,
+                gate_hidden_dims=gate_hidden_dims, 
+                activation=activation,
+                num_experts=num_experts,
+                top_k=top_k,
+                use_gate_loss=use_gate_loss,
+                use_load_balance_loss=use_load_balance_loss,
+                use_explicit_expert=use_explicit_expert,
+                use_shared_layers=use_shared_layers
+            )
+        else:
+            self.actor = MLP_net(num_actor_obs, actor_hidden_dims, num_actions, act)
 
         # Actor observation normalization
         self.actor_obs_normalization = actor_obs_normalization
@@ -370,21 +359,23 @@ class ActorCriticMoE(nn.Module):
             self.actor_obs_normalizer = torch.nn.Identity()
 
         # Critic
-        self.critic = MLP_net(num_critic_obs, critic_hidden_dims, 1, act)
-        """self.critic = MoE_net(
-            obs_dim=num_critic_obs,
-            act_dim=1,
-            hidden_dims=critic_hidden_dims,
-            gate_hidden_dims=gate_hidden_dims,
-            activation=activation,
-            num_experts=num_experts,
-            top_k=top_k,
-            use_gate_loss=use_gate_loss,
-            use_load_balance_loss=use_load_balance_loss,
-            use_explicit_expert=use_explicit_expert,
-            explicit_expert_epsilon=explicit_expert_epsilon,
-            use_shared_backbone=use_shared_backbone
-        )"""
+        if("critic" in self.who):
+            self.critic = MoE_net(
+                        obs_dim=num_critic_obs,
+                        act_dim=1,
+                        hidden_dims=critic_hidden_dims,
+                        gate_hidden_dims=gate_hidden_dims, 
+                        activation=activation,
+                        num_experts=num_experts,
+                        top_k=top_k,
+                        use_gate_loss=use_gate_loss,
+                        use_load_balance_loss=use_load_balance_loss,
+                        use_explicit_expert=use_explicit_expert,
+                        use_shared_layers=use_shared_layers
+            )
+        else:
+            self.critic = MLP_net(num_critic_obs, critic_hidden_dims, 1, act)
+
 
         # Critic observation normalization
         self.critic_obs_normalization = critic_obs_normalization
@@ -442,12 +433,22 @@ class ActorCriticMoE(nn.Module):
         """
         Mean gate entropy from last forward pass (useful for PPO regularization)
         """
-        w = self.actor._last_gate_weights
+        if("actor" in self.who and "critic" in self.who):
+            w = self.actor._last_gate_weights + self.critic._last_gate_weights
+        elif("actor" in self.who):
+            w = self.actor._last_gate_weights
+        elif("critic" in self.who):
+            w = self.critic._last_gate_weights
         return -(w * torch.log(w + 1e-8)).sum(dim=-1).mean()
 
     def load_balance_loss(self) -> torch.Tensor:
         """Aggregate load-balancing loss from the actor MoE."""
-        return self.actor.load_balance_loss()
+        if("actor" in self.who and "critic" in self.who):
+            return self.actor.load_balance_loss() + self.critic.load_balance_loss()
+        elif("actor" in self.who):
+            return self.actor.load_balance_loss()
+        elif("critic" in self.who):
+            return self.critic.load_balance_loss()
 
     def get_expert_stats(self) -> dict[str, float]:
         """Return per-expert utilization stats for logging (e.g. to wandb).
