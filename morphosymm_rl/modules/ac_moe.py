@@ -110,17 +110,17 @@ class MoE_net(nn.Module):
             )
 
 
-        if(self.use_explicit_expert == False):
-            # gating network
-            gate_layers = []
-            gate_hidden_dims = gate_hidden_dims or []
-            for h in gate_hidden_dims:
-                gate_layers += [nn.Linear(last_dim, h), act]
-                last_dim = h
-            gate_layers.append(nn.Linear(last_dim, num_experts))
-            self.gate = nn.Sequential(*gate_layers)
+        #if(self.use_explicit_expert == False):
+        # gating network
+        gate_layers = []
+        gate_hidden_dims = gate_hidden_dims or []
+        for h in gate_hidden_dims:
+            gate_layers += [nn.Linear(last_dim, h), act]
+            last_dim = h
+        gate_layers.append(nn.Linear(last_dim, num_experts))
+        self.gate = nn.Sequential(*gate_layers)
 
-            self.softmax = nn.Softmax(dim=-1)  # ONNX-friendly
+        self.softmax = nn.Softmax(dim=-1)  # ONNX-friendly
 
 
     def __getitem__(self, idx: int):
