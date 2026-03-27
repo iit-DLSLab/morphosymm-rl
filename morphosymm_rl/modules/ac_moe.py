@@ -154,7 +154,7 @@ class MoE_net(nn.Module):
             selector_vals = x[:, -1].long().clamp(0, self.num_experts - 1)  # [batch]
 
             # Build one-hot suggestions: [batch, num_experts]
-            weights_suggestion = torch.zeros(x.shape[0], self.num_experts, device=x.device, dtype=full_weights.dtype)
+            weights_suggestion = torch.zeros(x.shape[0], self.num_experts, device=x.device)
             weights_suggestion.scatter_(1, selector_vals.unsqueeze(1), 1.0)
             # [batch, 1, num_experts]
             weights = weights_suggestion.unsqueeze(1)
@@ -376,6 +376,8 @@ class ActorCriticMoE(nn.Module):
         else:
             self.critic = MLP_net(num_critic_obs, critic_hidden_dims, 1, act)
 
+        print("actor:", self.actor)
+        print("critic:", self.critic)
 
         # Critic observation normalization
         self.critic_obs_normalization = critic_obs_normalization
