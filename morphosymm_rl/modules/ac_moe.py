@@ -400,9 +400,17 @@ class ActorCriticMoE(nn.Module):
                 raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         else:
             if self.noise_std_type == "scalar":
-                self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+                if isinstance(self.actor, MoE_net):
+                    self.std = nn.Parameter(init_noise_std * torch.ones(self.actor.num_experts, num_actions))
+                else:
+                    self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+                #self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
             elif self.noise_std_type == "log":
-                self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
+                if isinstance(self.actor, MoE_net):
+                    self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(self.actor.num_experts, num_actions)))
+                else:
+                    self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
+                #self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
             else:
                 raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
 
@@ -472,15 +480,42 @@ class ActorCriticMoE(nn.Module):
             else:
                 raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         else:
-            # Compute mean
+            # -------- MEAN --------
             mean = self.actor(obs)
-            # Compute standard deviation
-            if self.noise_std_type == "scalar":
-                std = self.std.expand_as(mean)
-            elif self.noise_std_type == "log":
-                std = torch.exp(self.log_std).expand_as(mean)
+
+            # -------- STD (MoE-aware) --------
+            if isinstance(self.actor, MoE_net):
+                if self.actor.use_explicit_expert:
+                    selector_vals = obs[:, -1].long().clamp(0, self.actor.num_experts - 1)
+                    if self.noise_std_type == "scalar":
+                        std = self.std[selector_vals]
+                    elif self.noise_std_type == "log":
+                        std = torch.exp(self.log_std[selector_vals])
+
+                else:
+                    # gating case (soft mixture of experts)
+                    w = self.actor._last_unmasked_gate_weights  # [B, K]
+                    if self.noise_std_type == "scalar":
+                        std = w @ self.std
+                    elif self.noise_std_type == "log":
+                        expert_std = torch.exp(self.log_std)
+                        std = w @ expert_std
+
             else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+                # Standard MLP case without MoE-aware std handling
+                # Compute mean
+                mean = self.actor(obs)
+                # Compute standard deviation
+                if self.noise_std_type == "scalar":
+                    std = self.std.expand_as(mean)
+                elif self.noise_std_type == "log":
+                    std = torch.exp(self.log_std).expand_as(mean)
+                else:
+                    raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+
+        # -------- safety clamp  --------
+        std = torch.clamp(std, 1e-3, 2.0)
+
         # Create distribution
         self.distribution = Normal(mean, std)
 
