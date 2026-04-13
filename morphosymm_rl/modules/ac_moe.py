@@ -64,14 +64,24 @@ class MoE_net(nn.Module):
         # to Tensor during execution.
         self._last_gate_weights = torch.empty(0)
         self._last_unmasked_gate_weights = torch.empty(0)
+        
+        # Different modalities
         self.use_gate_loss = use_gate_loss
         self.use_load_balance_loss = use_load_balance_loss
-        
         self.use_explicit_expert = use_explicit_expert
-
         self.use_shared_backbone = use_shared_layers == "backbone"
         self.use_shared_backbone_and_head = use_shared_layers == "backbone+head"
 
+
+        # TorchScript/ONNX require all attributes to exist regardless of init branch.
+        # Provide placeholders; the correct branch below will overwrite them.
+        self.shared_backbone: nn.Module = nn.Sequential()
+        self.shared_head: nn.Module = nn.Linear(1, 1)
+        self.gate: nn.Module = nn.Sequential()
+        self.softmax: nn.Module = nn.Softmax(dim=-1)
+
+
+        # We start building the network
         if(self.use_shared_backbone_and_head):
             # Shared trunk + single shared head
             shared_layers = [nn.Linear(obs_dim, hidden_dims[0]), act]
@@ -110,85 +120,151 @@ class MoE_net(nn.Module):
             )
 
 
-        #if(self.use_explicit_expert == False):
-        # gating network
-        gate_layers = []
-        gate_hidden_dims = gate_hidden_dims or []
-        for h in gate_hidden_dims:
-            gate_layers += [nn.Linear(last_dim, h), act]
-            last_dim = h
-        gate_layers.append(nn.Linear(last_dim, num_experts))
-        self.gate = nn.Sequential(*gate_layers)
+        if(self.use_explicit_expert == False):
+            # gating network
+            gate_layers = []
+            gate_hidden_dims = gate_hidden_dims or []
+            for h in gate_hidden_dims:
+                gate_layers += [nn.Linear(last_dim, h), act]
+                last_dim = h
+            gate_layers.append(nn.Linear(last_dim, num_experts))
+            self.gate = nn.Sequential(*gate_layers)
 
-        self.softmax = nn.Softmax(dim=-1)  # ONNX-friendly
+            self.softmax = nn.Softmax(dim=-1)  # ONNX-friendly
 
+    # ------------------------------------------------------------------ #
+    #  Things for jitting/onnx export the net
+    # ------------------------------------------------------------------ #
 
     def __getitem__(self, idx: int):
         """Allow indexing into the MoE to get the underlying expert module
         (keeps compatibility with code doing `actor[0]`).
+        
+        Note: For shared backbone/head modes, experts[0] is an inner layer
+        (not the input layer). We wrap it so that `actor[0].in_features`
+        still reports the correct *network* input dimension (obs_dim).
         """
-        return self.experts[idx]
+        module = self.experts[idx]
+        if self.use_shared_backbone or self.use_shared_backbone_and_head:
+            # The exporter queries actor[0].in_features to size the dummy input.
+            # Monkey-patch so it reflects the true obs_dim, not the expert head input.
+            module.in_features = self.obs_dim  # type: ignore[attr-defined]
+        return module
 
+    @property
+    def in_features(self) -> int:
+        """Return the observation dimension expected by this MoE network.
+
+        This is used by the policy exporter to create a correctly-sized
+        dummy input for JIT tracing / ONNX export.
+        """
+        return self.obs_dim
+
+    # ------------------------------------------------------------------ #
+    #  Expert output computation — one method per topology
+    # ------------------------------------------------------------------ #
+
+    def _experts_separate(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Each expert is a full MLP; gate receives the raw observation."""
+        expert_out = torch.stack([e(x) for e in self.experts], dim=-1)  # [B, act_dim, K]
+        return expert_out, x
+
+    def _experts_shared_backbone(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Shared backbone → per-expert linear heads; gate receives backbone features."""
+        features = self.shared_backbone(x)
+        expert_out = torch.stack([e(features) for e in self.experts], dim=-1)  # [B, act_dim, K]
+        return expert_out, features
+
+    def _experts_shared_backbone_and_head(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Shared backbone → per-expert linear → shared head; gate receives backbone features."""
+        features = self.shared_backbone(x)
+        expert_out = torch.stack([e(features) for e in self.experts], dim=-1)  # [B, hidden, K]
+        return expert_out, features
+
+    # ------------------------------------------------------------------ #
+    #  Gating — one method per routing strategy
+    # ------------------------------------------------------------------ #
+
+    def _gate_explicit(self, x: torch.Tensor) -> torch.Tensor:
+        """Hard expert selection: the last element of *x* encodes the expert index.
+
+        Returns:
+            weights: [B, 1, K] one-hot gating tensor.
+        """
+        selector_vals = x[:, -1].long().clamp(0, self.num_experts - 1)
+        weights = torch.zeros(x.shape[0], self.num_experts, device=x.device)
+        weights.scatter_(1, selector_vals.unsqueeze(1), 1.0)
+        return weights.unsqueeze(1)
+
+    def _gate_dense(self, gate_input: torch.Tensor) -> torch.Tensor:
+        """Soft gating over all experts (no sparsity).
+
+        Returns:
+            weights: [B, 1, K] soft gating tensor.
+        """
+        gate_logits = self.gate(gate_input)
+        full_weights = self.softmax(gate_logits)
+        self._last_unmasked_gate_weights = full_weights
+        return full_weights.unsqueeze(1)
+
+    def _gate_sparse(self, gate_input: torch.Tensor) -> torch.Tensor:
+        """Top-k sparse gating: only *top_k* experts receive non-zero weight.
+
+        Returns:
+            weights: [B, 1, K] sparse gating tensor.
+        """
+        gate_logits = self.gate(gate_input)
+        self._last_unmasked_gate_weights = self.softmax(gate_logits)
+
+        topk_vals, topk_idx = torch.topk(gate_logits, k=self.top_k, dim=-1)
+        masked_logits = torch.full_like(gate_logits, -1e9)
+        masked_logits.scatter_(dim=-1, index=topk_idx, src=topk_vals)
+        full_weights = self.softmax(masked_logits)
+
+        self._last_unmasked_gate_weights = full_weights
+        return full_weights.unsqueeze(1)
+
+    # ------------------------------------------------------------------ #
+    #  Output combination — one method per topology
+    # ------------------------------------------------------------------ #
+
+    def _combine_with_shared_head(self, expert_out: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+        """Weighted sum of expert outputs followed by a shared linear head."""
+        mixed = (expert_out * weights).sum(dim=-1)   # [B, hidden]
+        return self.shared_head(mixed)                # [B, act_dim]
+
+    def _combine_direct(self, expert_out: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+        """Weighted sum of expert outputs (no extra head)."""
+        return (expert_out * weights).sum(dim=-1)     # [B, act_dim]
+
+    # ------------------------------------------------------------------ #
+    #  Forward — dispatches to the correct sub-methods
+    # ------------------------------------------------------------------ #
 
     def forward(self, x: torch.Tensor, return_gate: bool = False) -> torch.Tensor:
-        """
-        Args:
-            x: [batch, obs_dim]
-        Returns:
-            mean action: [batch, act_dim]
-        """
-
-        # [batch, act_dim, K]
-        if(self.use_shared_backbone or self.use_shared_backbone_and_head):
-            features = self.shared_backbone(x)
-            expert_out = torch.stack([e(features) for e in self.experts], dim=-1)
-            gate_input = features
-        
+        # 1) Expert outputs
+        if self.use_shared_backbone_and_head:
+            expert_out, gate_input = self._experts_shared_backbone_and_head(x)
+        elif self.use_shared_backbone:
+            expert_out, gate_input = self._experts_shared_backbone(x)
         else:
-            expert_out = torch.stack([e(x) for e in self.experts], dim=-1)
-            gate_input = x
+            expert_out, gate_input = self._experts_separate(x)
 
-        # ---- weights for expert combination ----
-        if(self.use_explicit_expert):
-            # Extract expert selector index from the last feature (float in [0, N-1])
-            selector_vals = x[:, -1].long().clamp(0, self.num_experts - 1)  # [batch]
-
-            # Build one-hot suggestions: [batch, num_experts]
-            weights_suggestion = torch.zeros(x.shape[0], self.num_experts, device=x.device)
-            weights_suggestion.scatter_(1, selector_vals.unsqueeze(1), 1.0)
-            # [batch, 1, num_experts]
-            weights = weights_suggestion.unsqueeze(1)
-
+        # 2) Gating weights
+        if self.use_explicit_expert:
+            weights = self._gate_explicit(x)
+        elif self.is_sparse:
+            weights = self._gate_sparse(gate_input)
         else:
-            gate_logits = self.gate(gate_input)
+            weights = self._gate_dense(gate_input)
 
-            if self.is_sparse == False:
-                # standard dense MoE
-                full_weights = self.softmax(gate_logits)
-                weights = full_weights.unsqueeze(1)
-        
-            else:
-                self._last_unmasked_gate_weights = self.softmax(gate_logits)  # [batch, K]
-                # top-k sparse MoE
-                topk_vals, topk_idx = torch.topk(gate_logits, k=self.top_k, dim=-1)
+        self._last_gate_weights = weights
 
-                masked_logits = torch.full_like(gate_logits, float("-inf"))
-                masked_logits.scatter_(dim=-1, index=topk_idx, src=topk_vals)
-
-                full_weights = self.softmax(masked_logits)
-                weights = self.softmax(masked_logits).unsqueeze(1)
-            
-            # cache for PPO losses / logging
-            self._last_unmasked_gate_weights = full_weights
-
-                
-        # ---- final output ----
-        if(self.use_shared_backbone_and_head):
-            return self.shared_head((expert_out * weights).sum(dim=-1))
-
+        # 3) Combine
+        if self.use_shared_backbone_and_head:
+            return self._combine_with_shared_head(expert_out, weights)
         else:
-            # weighted sum -> [batch, act_dim]
-            return (expert_out * weights).sum(dim=-1)
+            return self._combine_direct(expert_out, weights)
 
 
     def load_balance_loss(self) -> torch.Tensor:
