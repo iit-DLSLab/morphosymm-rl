@@ -81,6 +81,12 @@ class MoE_net(nn.Module):
         self.softmax: nn.Module = nn.Softmax(dim=-1)
 
 
+        # If explicit expert is used, the last input variable is not 
+        # considered an obs
+        if(self.use_explicit_expert):
+            obs_dim = obs_dim-1
+
+
         # We start building the network
         if(self.use_shared_backbone_and_head):
             # Shared trunk + single shared head
@@ -91,9 +97,10 @@ class MoE_net(nn.Module):
             self.shared_backbone = nn.Sequential(*shared_layers)
             last_dim = hidden_dims[-2]
 
-            # single big linear for all experts
+            # Expert-specific nonlinear heads that project shared features into a
+            # common latent space before the shared output layer.
             self.experts = nn.ModuleList(
-                [nn.Linear(last_dim, hidden_dims[-1]) for _ in range(num_experts)]
+                [MLP_net(last_dim, [hidden_dims[-1]], hidden_dims[-1], act) for _ in range(num_experts)]
             )
 
             self.shared_head = nn.Linear(hidden_dims[-1], act_dim)
@@ -101,15 +108,15 @@ class MoE_net(nn.Module):
         elif(self.use_shared_backbone):
             # Shared trunk + separate expert heads
             shared_layers = [nn.Linear(obs_dim, hidden_dims[0]), act]
-            for i in range(len(hidden_dims) - 1):
+            for i in range(len(hidden_dims) - 2):
                 shared_layers += [nn.Linear(hidden_dims[i], hidden_dims[i + 1]), act]
 
             self.shared_backbone = nn.Sequential(*shared_layers)
-            last_dim = hidden_dims[-1]
+            last_dim = hidden_dims[-2]
 
-            # single big linear for all experts
+            # Expert-specific nonlinear heads on top of the shared backbone.
             self.experts = nn.ModuleList(
-                [nn.Linear(last_dim, act_dim) for _ in range(num_experts)]
+                [MLP_net(last_dim, [last_dim], act_dim, act) for _ in range(num_experts)]
             )
         
         else:
@@ -166,18 +173,28 @@ class MoE_net(nn.Module):
 
     def _experts_separate(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Each expert is a full MLP; gate receives the raw observation."""
-        expert_out = torch.stack([e(x) for e in self.experts], dim=-1)  # [B, act_dim, K]
+        if(self.use_explicit_expert):
+            expert_out = torch.stack([e(x[:, :-1]) for e in self.experts], dim=-1)  # [B, act_dim, K]
+        else:
+            expert_out = torch.stack([e(x) for e in self.experts], dim=-1)  # [B, act_dim, K]
         return expert_out, x
 
     def _experts_shared_backbone(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Shared backbone → per-expert linear heads; gate receives backbone features."""
-        features = self.shared_backbone(x)
+        if(self.use_explicit_expert):
+            features = self.shared_backbone(x[:, :-1])
+        else:
+            features = self.shared_backbone(x)
         expert_out = torch.stack([e(features) for e in self.experts], dim=-1)  # [B, act_dim, K]
         return expert_out, features
 
     def _experts_shared_backbone_and_head(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Shared backbone → per-expert linear → shared head; gate receives backbone features."""
-        features = self.shared_backbone(x)
+
+        if(self.use_explicit_expert):
+            features = self.shared_backbone(x[:, :-1])
+        else:
+            features = self.shared_backbone(x)
         expert_out = torch.stack([e(features) for e in self.experts], dim=-1)  # [B, hidden, K]
         return expert_out, features
 
