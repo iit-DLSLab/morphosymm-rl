@@ -17,15 +17,22 @@ class MLP_net(nn.Sequential):
             else:
                 layers.extend([nn.Linear(hidden_dims[i], hidden_dims[i + 1]), act])
         super().__init__(*layers)
+        self._in_features_override = -1
 
     @property
     def in_features(self) -> int:
         """Proxy to the in_features of the first linear layer so external code can
         query an MLP's input size (e.g. exporter expecting `module.in_features`).
         """
+        if self._in_features_override >= 0:
+            return self._in_features_override
         first = self[0]
         # first is expected to be nn.Linear
         return int(first.in_features)
+
+    @in_features.setter
+    def in_features(self, value: int) -> None:
+        self._in_features_override = int(value)
 
 
 class MoE_net(nn.Module):
