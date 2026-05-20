@@ -215,7 +215,9 @@ class MoE_net(nn.Module):
         Returns:
             weights: [B, 1, K] one-hot gating tensor.
         """
-        selector_vals = x[:, -1].long().clamp(0, self.num_experts - 1)
+        #print("x[:, -1]:", x[:, -1])
+        selector_vals = x[:, -1].round().long().clamp(0, self.num_experts - 1)
+        #print("selector_vals:", selector_vals)
         weights = torch.zeros(x.shape[0], self.num_experts, device=x.device)
         weights.scatter_(1, selector_vals.unsqueeze(1), 1.0)
         return weights.unsqueeze(1)
