@@ -588,7 +588,7 @@ class ActorCriticMoE(nn.Module):
             # -------- STD (MoE-aware) --------
             if isinstance(self.actor, MoE_net):
                 if self.actor.use_explicit_expert:
-                    selector_vals = obs[:, -1].long().clamp(0, self.actor.num_experts - 1)
+                    selector_vals = obs[:, -1].round().long().clamp(0, self.actor.num_experts - 1)
                     if self.noise_std_type == "scalar":
                         std = self.std[selector_vals]
                     elif self.noise_std_type == "log":
