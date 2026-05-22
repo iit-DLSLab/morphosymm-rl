@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+from typing import Any, NoReturn
+from tensordict import TensorDict
 from torch.distributions import Normal
+from rsl_rl.networks import EmpiricalNormalization
 from rsl_rl.utils import resolve_nn_activation
 
 
@@ -33,6 +36,62 @@ class MLP_net(nn.Sequential):
     @in_features.setter
     def in_features(self, value: int) -> None:
         self._in_features_override = int(value)
+
+
+class DiagonalGaussianMixture:
+    """Batch of diagonal Gaussian mixtures over actions.
+
+    Shapes:
+        component_means: [batch, num_experts, action_dim]
+        component_stds: [batch, num_experts, action_dim]
+        mixture_weights: [batch, num_experts]
+    """
+
+    def __init__(
+        self,
+        component_means: torch.Tensor,
+        component_stds: torch.Tensor,
+        mixture_weights: torch.Tensor,
+    ) -> None:
+        if mixture_weights.dim() == 3:
+            mixture_weights = mixture_weights.squeeze(1)
+
+        self.component_means = component_means
+        self.component_stds = torch.clamp(component_stds, min=1e-6)
+        self.mixture_weights = mixture_weights / mixture_weights.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+        self.component_distribution = Normal(self.component_means, self.component_stds)
+
+    @property
+    def mean(self) -> torch.Tensor:
+        return (self.mixture_weights.unsqueeze(-1) * self.component_means).sum(dim=1)
+
+    @property
+    def stddev(self) -> torch.Tensor:
+        second_moment = (
+            self.mixture_weights.unsqueeze(-1) * (self.component_stds.square() + self.component_means.square())
+        ).sum(dim=1)
+        variance = (second_moment - self.mean.square()).clamp_min(1e-12)
+        return torch.sqrt(variance)
+
+    def sample(self) -> torch.Tensor:
+        expert_idx = torch.multinomial(self.mixture_weights, num_samples=1)
+        gather_idx = expert_idx.unsqueeze(-1).expand(-1, -1, self.component_means.shape[-1])
+        means = torch.gather(self.component_means, dim=1, index=gather_idx).squeeze(1)
+        stds = torch.gather(self.component_stds, dim=1, index=gather_idx).squeeze(1)
+        return means + torch.randn_like(means) * stds
+
+    def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
+        component_log_probs = self.component_distribution.log_prob(actions.unsqueeze(1)).sum(dim=-1)
+        log_weights = torch.log(self.mixture_weights.clamp_min(1e-8))
+        return torch.logsumexp(log_weights + component_log_probs, dim=-1)
+
+    def entropy(self) -> torch.Tensor:
+        # Upper-bound approximation H(a, z) = H(z) + E_z[H(a | z)].
+        weights = self.mixture_weights.clamp_min(1e-8)
+        weights = weights / weights.sum(dim=-1, keepdim=True)
+        mixture_entropy = -(weights * torch.log(weights)).sum(dim=-1)
+        component_entropy = self.component_distribution.entropy().sum(dim=-1)
+        return mixture_entropy + (weights * component_entropy).sum(dim=-1)
 
 
 class MoE_net(nn.Module):
@@ -71,6 +130,7 @@ class MoE_net(nn.Module):
         # to Tensor during execution.
         self._last_gate_weights = torch.empty(0)
         self._last_unmasked_gate_weights = torch.empty(0)
+        self._last_component_outputs = torch.empty(0)
         
         # Different modalities
         self.use_gate_loss = use_gate_loss
@@ -285,6 +345,11 @@ class MoE_net(nn.Module):
             weights = self._gate_dense(gate_input)
 
         self._last_gate_weights = weights
+        if self.use_shared_backbone_and_head:
+            component_out = self.shared_head(expert_out.transpose(1, 2)).transpose(1, 2)
+        else:
+            component_out = expert_out
+        self._last_component_outputs = component_out
 
         # 3) Combine
         if self.use_shared_backbone_and_head:
@@ -434,6 +499,9 @@ class ActorCriticMoE(nn.Module):
         use_explicit_expert = moe_cfg["use_explicit_expert"]
         gate_hidden_dims = moe_cfg["gate_hidden_dims"]
         use_shared_layers = moe_cfg["use_shared_layers"]
+        self.use_gate_loss = use_gate_loss
+        self.use_load_balance_loss = use_load_balance_loss
+        self.use_gaussian_mixture = bool(moe_cfg.get("use_gaussian_mixture", False))
         self.log_expert_stats = moe_cfg["log_expert_stats"]
 
         if("actor" in self.who):
@@ -452,6 +520,9 @@ class ActorCriticMoE(nn.Module):
             )
         else:
             self.actor = MLP_net(num_actor_obs, actor_hidden_dims, num_actions, act)
+
+        if self.use_gaussian_mixture and not isinstance(self.actor, MoE_net):
+            raise ValueError("`use_gaussian_mixture=True` requires `who` to include 'actor'.")
 
         # Actor observation normalization
         self.actor_obs_normalization = actor_obs_normalization
@@ -509,7 +580,9 @@ class ActorCriticMoE(nn.Module):
                 #self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
             elif self.noise_std_type == "log":
                 if isinstance(self.actor, MoE_net):
-                    self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(self.actor.num_experts, num_actions)))
+                    self.log_std = nn.Parameter(
+                        torch.log(init_noise_std * torch.ones(self.actor.num_experts, num_actions))
+                    )
                 else:
                     self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
                 #self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
@@ -539,7 +612,10 @@ class ActorCriticMoE(nn.Module):
 
     @property
     def entropy(self) -> torch.Tensor:
-        return self.distribution.entropy().sum(dim=-1)
+        entropy = self.distribution.entropy()
+        if entropy.dim() > 1:
+            entropy = entropy.sum(dim=-1)
+        return entropy
 
     def gate_entropy(self) -> torch.Tensor:
         """
@@ -567,8 +643,22 @@ class ActorCriticMoE(nn.Module):
 
         Keys are prefixed with ``MoE/`` so they appear in a dedicated group.
         """
-        raw = self.actor.expert_utilization_stats()
+        if isinstance(self.actor, MoE_net):
+            raw = self.actor.expert_utilization_stats()
+        elif isinstance(self.critic, MoE_net):
+            raw = self.critic.expert_utilization_stats()
+        else:
+            return {}
         return {f"MoE/{k}": v.item() if isinstance(v, torch.Tensor) else v for k, v in raw.items()}
+
+    def _expert_action_std(self, batch_size: int) -> torch.Tensor:
+        if self.noise_std_type == "scalar":
+            expert_std = self.std
+        elif self.noise_std_type == "log":
+            expert_std = torch.exp(self.log_std)
+        else:
+            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+        return expert_std.unsqueeze(0).expand(batch_size, -1, -1)
 
     def _update_distribution(self, obs: torch.Tensor) -> None:
         if self.state_dependent_std:
@@ -582,32 +672,28 @@ class ActorCriticMoE(nn.Module):
             else:
                 raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         else:
-            # -------- MEAN --------
-            mean = self.actor(obs)
-
-            # -------- STD (MoE-aware) --------
             if isinstance(self.actor, MoE_net):
+                mean = self.actor(obs)
+                expert_std = torch.clamp(self._expert_action_std(obs.shape[0]), 1e-3, 2.0)
+
+                if self.use_gaussian_mixture:
+                    component_means = self.actor._last_component_outputs.transpose(1, 2)
+                    weights = self.actor._last_gate_weights.squeeze(1)
+                    self.distribution = DiagonalGaussianMixture(component_means, expert_std, weights)
+                    return
+
                 if self.actor.use_explicit_expert:
                     selector_vals = obs[:, -1].round().long().clamp(0, self.actor.num_experts - 1)
-                    if self.noise_std_type == "scalar":
-                        std = self.std[selector_vals]
-                    elif self.noise_std_type == "log":
-                        std = torch.exp(self.log_std[selector_vals])
+                    batch_idx = torch.arange(obs.shape[0], device=obs.device)
+                    std = expert_std[batch_idx, selector_vals]
 
                 else:
-                    # gating case (soft mixture of experts)
-                    w = self.actor._last_unmasked_gate_weights  # [B, K]
-                    if self.noise_std_type == "scalar":
-                        std = w @ self.std
-                    elif self.noise_std_type == "log":
-                        expert_std = torch.exp(self.log_std)
-                        std = w @ expert_std
+                    # Gating case: collapse expert stds into one diagonal Gaussian.
+                    weights = self.actor._last_gate_weights.squeeze(1)
+                    std = (weights.unsqueeze(-1) * expert_std).sum(dim=1)
 
             else:
-                # Standard MLP case without MoE-aware std handling
-                # Compute mean
                 mean = self.actor(obs)
-                # Compute standard deviation
                 if self.noise_std_type == "scalar":
                     std = self.std.expand_as(mean)
                 elif self.noise_std_type == "log":
@@ -649,7 +735,10 @@ class ActorCriticMoE(nn.Module):
         return torch.cat(obs_list, dim=-1)
 
     def get_actions_log_prob(self, actions: torch.Tensor) -> torch.Tensor:
-        return self.distribution.log_prob(actions).sum(dim=-1)
+        log_prob = self.distribution.log_prob(actions)
+        if log_prob.dim() > 1:
+            log_prob = log_prob.sum(dim=-1)
+        return log_prob
 
     def update_normalization(self, obs: TensorDict) -> None:
         if self.actor_obs_normalization:

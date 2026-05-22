@@ -328,13 +328,19 @@ class PPOSymmDataAugmented:
             # Compute KL divergence and adapt the learning rate
             if self.desired_kl is not None and self.schedule == "adaptive":
                 with torch.inference_mode():
-                    kl = torch.sum(
-                        torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
-                        + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch))
-                        / (2.0 * torch.square(sigma_batch))
-                        - 0.5,
-                        axis=-1,
-                    )
+                    if getattr(self.policy, "use_gaussian_mixture", False):
+                        old_actions_log_prob = old_actions_log_prob_batch.squeeze(-1)
+                        if old_actions_log_prob.shape != actions_log_prob_batch.shape:
+                            old_actions_log_prob = old_actions_log_prob.reshape_as(actions_log_prob_batch)
+                        kl = old_actions_log_prob - actions_log_prob_batch.detach()
+                    else:
+                        kl = torch.sum(
+                            torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
+                            + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch))
+                            / (2.0 * torch.square(sigma_batch))
+                            - 0.5,
+                            axis=-1,
+                        )
                     kl_mean = torch.mean(kl)
 
                     # Reduce the KL divergence across all GPUs
@@ -432,7 +438,7 @@ class PPOSymmDataAugmented:
 
 
             # MoE loss
-            if hasattr(self.policy.actor, "use_gate_loss") and self.policy.actor.use_gate_loss:
+            if getattr(self.policy, "use_gate_loss", False) or getattr(self.policy.actor, "use_gate_loss", False):
                 gate_entropy = self.policy.gate_entropy()
                 gate_entropy_coef = 0.0001
                 loss -= gate_entropy_coef * gate_entropy
