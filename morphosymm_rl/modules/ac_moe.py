@@ -38,6 +38,11 @@ class MLP_net(nn.Sequential):
         self._in_features_override = int(value)
 
 
+class Identity_net(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
+
+
 class DiagonalGaussianMixture:
     """Batch of diagonal Gaussian mixtures over actions.
 
@@ -114,6 +119,10 @@ class MoE_net(nn.Module):
         use_load_balance_loss: bool = False,
         use_explicit_expert: bool = False,
         use_shared_layers="None",
+        use_shared_exteroception: bool = False,
+        exteroceptive_start_idx: int = -150,
+        exteroceptive_end_idx: int = -2,
+        exteroceptive_hidden_dims: list[int] | None = None,
     ):
         super().__init__()
         self.obs_dim = obs_dim
@@ -136,8 +145,11 @@ class MoE_net(nn.Module):
         self.use_gate_loss = use_gate_loss
         self.use_load_balance_loss = use_load_balance_loss
         self.use_explicit_expert = use_explicit_expert
+        self.use_shared_exteroception = use_shared_exteroception
         self.use_shared_backbone = use_shared_layers == "backbone"
         self.use_shared_backbone_and_head = use_shared_layers == "backbone+head"
+        self.exteroceptive_start_idx = int(exteroceptive_start_idx)
+        self.exteroceptive_end_idx = int(exteroceptive_end_idx)
 
 
         # TorchScript/ONNX require all attributes to exist regardless of init branch.
@@ -146,6 +158,8 @@ class MoE_net(nn.Module):
         self.shared_head: nn.Module = nn.Linear(1, 1)
         self.gate: nn.Module = nn.Sequential()
         self.softmax: nn.Module = nn.Softmax(dim=-1)
+        self.shared_extero_encoder: nn.Module = Identity_net()
+        self.extero_latent_dim = 0
 
 
         # If explicit expert is used, the last input variable is not 
@@ -153,51 +167,79 @@ class MoE_net(nn.Module):
         if(self.use_explicit_expert):
             obs_dim = obs_dim-1
 
+        model_obs_dim = obs_dim
+        gate_obs_dim = obs_dim
+        if self.use_shared_exteroception:
+            extero_start, extero_end = self._resolve_exteroceptive_slice(obs_dim)
+            extero_dim = extero_end - extero_start
+            proprio_dim = obs_dim - extero_dim
+            if extero_dim <= 0 or proprio_dim <= 0:
+                raise ValueError("Invalid exteroceptive slice for MoE_net.")
+
+            exteroceptive_hidden_dims = exteroceptive_hidden_dims or []
+            if len(exteroceptive_hidden_dims) == 0:
+                self.shared_extero_encoder = Identity_net()
+                extero_latent_dim = extero_dim
+            else:
+                extero_latent_dim = exteroceptive_hidden_dims[-1]
+                self.shared_extero_encoder = MLP_net(
+                    extero_dim, exteroceptive_hidden_dims[:-1], extero_latent_dim, act
+                )
+            self.extero_latent_dim = extero_latent_dim
+            model_obs_dim = proprio_dim
+            gate_obs_dim = proprio_dim
+
 
         # We start building the network
         if(self.use_shared_backbone_and_head):
             # Shared trunk + single shared head
-            shared_layers = [nn.Linear(obs_dim, hidden_dims[0]), act]
+            shared_layers = [nn.Linear(model_obs_dim, hidden_dims[0]), act]
             for i in range(len(hidden_dims) - 2):
                 shared_layers += [nn.Linear(hidden_dims[i], hidden_dims[i + 1]), act]
 
             self.shared_backbone = nn.Sequential(*shared_layers)
             last_dim = hidden_dims[-2]
+            expert_input_dim = last_dim + self.extero_latent_dim
 
             # Expert-specific nonlinear heads that project shared features into a
             # common latent space before the shared output layer.
             self.experts = nn.ModuleList(
-                [MLP_net(last_dim, [hidden_dims[-1]], hidden_dims[-1], act) for _ in range(num_experts)]
+                [MLP_net(expert_input_dim, [hidden_dims[-1]], hidden_dims[-1], act) for _ in range(num_experts)]
             )
 
             self.shared_head = nn.Linear(hidden_dims[-1], act_dim)
         
         elif(self.use_shared_backbone):
             # Shared trunk + separate expert heads
-            shared_layers = [nn.Linear(obs_dim, hidden_dims[0]), act]
+            shared_layers = [nn.Linear(model_obs_dim, hidden_dims[0]), act]
             for i in range(len(hidden_dims) - 2):
                 shared_layers += [nn.Linear(hidden_dims[i], hidden_dims[i + 1]), act]
 
             self.shared_backbone = nn.Sequential(*shared_layers)
             last_dim = hidden_dims[-2]
+            expert_input_dim = last_dim + self.extero_latent_dim
 
             # Expert-specific nonlinear heads on top of the shared backbone.
             self.experts = nn.ModuleList(
-                [MLP_net(last_dim, [last_dim], act_dim, act) for _ in range(num_experts)]
+                [MLP_net(expert_input_dim, [last_dim], act_dim, act) for _ in range(num_experts)]
             )
         
         else:
             # Separate NN Experts
-            last_dim =  obs_dim
+            expert_input_dim = model_obs_dim + self.extero_latent_dim
+            last_dim = model_obs_dim
             self.experts = nn.ModuleList(
-                [MLP_net(obs_dim, hidden_dims, act_dim, act) for _ in range(num_experts)]
+                [MLP_net(expert_input_dim, hidden_dims, act_dim, act) for _ in range(num_experts)]
             )
+
+        gate_input_dim = last_dim if (self.use_shared_backbone or self.use_shared_backbone_and_head) else gate_obs_dim
 
 
         if(self.use_explicit_expert == False):
             # gating network
             gate_layers = []
             gate_hidden_dims = gate_hidden_dims or []
+            last_dim = gate_input_dim
             for h in gate_hidden_dims:
                 gate_layers += [nn.Linear(last_dim, h), act]
                 last_dim = h
@@ -238,31 +280,69 @@ class MoE_net(nn.Module):
     #  Expert output computation — one method per topology
     # ------------------------------------------------------------------ #
 
+    def _resolve_exteroceptive_slice(self, feature_dim: int) -> tuple[int, int]:
+        start = self.exteroceptive_start_idx if self.exteroceptive_start_idx >= 0 else feature_dim + self.exteroceptive_start_idx
+        end = self.exteroceptive_end_idx if self.exteroceptive_end_idx >= 0 else feature_dim + self.exteroceptive_end_idx
+        start = max(0, min(start, feature_dim))
+        end = max(0, min(end, feature_dim))
+        if end <= start:
+            raise ValueError(
+                f"Resolved exteroceptive slice is empty: [{start}:{end}] from raw [{self.exteroceptive_start_idx}:{self.exteroceptive_end_idx}]."
+            )
+        return start, end
+
+    def _prepare_observation_input(self, x: torch.Tensor) -> torch.Tensor:
+        obs_input = x[:, :-1] if self.use_explicit_expert else x
+        if not self.use_shared_exteroception:
+            return obs_input
+
+        start, end = self._resolve_exteroceptive_slice(obs_input.shape[-1])
+        proprioceptive_input = torch.cat([obs_input[:, :start], obs_input[:, end:]], dim=-1)
+        return proprioceptive_input
+
+    def _prepare_gate_input(self, x: torch.Tensor) -> torch.Tensor:
+        obs_input = x[:, :-1] if self.use_explicit_expert else x
+        if not self.use_shared_exteroception:
+            return obs_input
+
+        start, end = self._resolve_exteroceptive_slice(obs_input.shape[-1])
+        proprioceptive_input = torch.cat([obs_input[:, :start], obs_input[:, end:]], dim=-1)
+        return proprioceptive_input
+
+    def _prepare_exteroceptive_features(self, x: torch.Tensor) -> torch.Tensor | None:
+        if not self.use_shared_exteroception:
+            return None
+
+        obs_input = x[:, :-1] if self.use_explicit_expert else x
+        start, end = self._resolve_exteroceptive_slice(obs_input.shape[-1])
+        exteroceptive_input = obs_input[:, start:end]
+        return self.shared_extero_encoder(exteroceptive_input)
+
     def _experts_separate(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Each expert is a full MLP; gate receives the raw observation."""
-        if(self.use_explicit_expert):
-            expert_out = torch.stack([e(x[:, :-1]) for e in self.experts], dim=-1)  # [B, act_dim, K]
-        else:
-            expert_out = torch.stack([e(x) for e in self.experts], dim=-1)  # [B, act_dim, K]
-        return expert_out, x
+        obs_input = self._prepare_observation_input(x)
+        extero_features = self._prepare_exteroceptive_features(x)
+        expert_input = obs_input if extero_features is None else torch.cat([obs_input, extero_features], dim=-1)
+        expert_out = torch.stack([e(expert_input) for e in self.experts], dim=-1)  # [B, act_dim, K]
+        return expert_out, self._prepare_gate_input(x)
 
     def _experts_shared_backbone(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Shared backbone → per-expert linear heads; gate receives backbone features."""
-        if(self.use_explicit_expert):
-            features = self.shared_backbone(x[:, :-1])
-        else:
-            features = self.shared_backbone(x)
-        expert_out = torch.stack([e(features) for e in self.experts], dim=-1)  # [B, act_dim, K]
+        obs_input = self._prepare_observation_input(x)
+        features = self.shared_backbone(obs_input)
+        extero_features = self._prepare_exteroceptive_features(x)
+        expert_input = features if extero_features is None else torch.cat([features, extero_features], dim=-1)
+        expert_out = torch.stack([e(expert_input) for e in self.experts], dim=-1)  # [B, act_dim, K]
         return expert_out, features
 
     def _experts_shared_backbone_and_head(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Shared backbone → per-expert linear → shared head; gate receives backbone features."""
 
-        if(self.use_explicit_expert):
-            features = self.shared_backbone(x[:, :-1])
-        else:
-            features = self.shared_backbone(x)
-        expert_out = torch.stack([e(features) for e in self.experts], dim=-1)  # [B, hidden, K]
+        obs_input = self._prepare_observation_input(x)
+        features = self.shared_backbone(obs_input)
+        extero_features = self._prepare_exteroceptive_features(x)
+        expert_input = features if extero_features is None else torch.cat([features, extero_features], dim=-1)
+        expert_out = torch.stack([e(expert_input) for e in self.experts], dim=-1)  # [B, hidden, K]
         return expert_out, features
 
     # ------------------------------------------------------------------ #
@@ -499,6 +579,10 @@ class ActorCriticMoE(nn.Module):
         use_explicit_expert = moe_cfg["use_explicit_expert"]
         gate_hidden_dims = moe_cfg["gate_hidden_dims"]
         use_shared_layers = moe_cfg["use_shared_layers"]
+        use_shared_exteroception = bool(moe_cfg.get("use_shared_exteroception", False))
+        exteroceptive_start_idx = int(moe_cfg.get("exteroceptive_start_idx", -150))
+        exteroceptive_end_idx = int(moe_cfg.get("exteroceptive_end_idx", -2))
+        exteroceptive_hidden_dims = moe_cfg.get("exteroceptive_hidden_dims", None)
         self.use_gate_loss = use_gate_loss
         self.use_load_balance_loss = use_load_balance_loss
         self.use_gaussian_mixture = bool(moe_cfg.get("use_gaussian_mixture", False))
@@ -516,7 +600,11 @@ class ActorCriticMoE(nn.Module):
                 use_gate_loss=use_gate_loss,
                 use_load_balance_loss=use_load_balance_loss,
                 use_explicit_expert=use_explicit_expert,
-                use_shared_layers=use_shared_layers
+                use_shared_layers=use_shared_layers,
+                use_shared_exteroception=use_shared_exteroception,
+                exteroceptive_start_idx=exteroceptive_start_idx,
+                exteroceptive_end_idx=exteroceptive_end_idx,
+                exteroceptive_hidden_dims=exteroceptive_hidden_dims,
             )
         else:
             self.actor = MLP_net(num_actor_obs, actor_hidden_dims, num_actions, act)
@@ -544,7 +632,11 @@ class ActorCriticMoE(nn.Module):
                         use_gate_loss=use_gate_loss,
                         use_load_balance_loss=use_load_balance_loss,
                         use_explicit_expert=use_explicit_expert,
-                        use_shared_layers=use_shared_layers
+                        use_shared_layers=use_shared_layers,
+                        use_shared_exteroception=use_shared_exteroception,
+                        exteroceptive_start_idx=exteroceptive_start_idx,
+                        exteroceptive_end_idx=exteroceptive_end_idx,
+                        exteroceptive_hidden_dims=exteroceptive_hidden_dims,
             )
         else:
             self.critic = MLP_net(num_critic_obs, critic_hidden_dims, 1, act)
