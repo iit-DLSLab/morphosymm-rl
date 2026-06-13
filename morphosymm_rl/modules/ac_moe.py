@@ -150,6 +150,8 @@ class MoE_net(nn.Module):
         self.use_shared_backbone_and_head = use_shared_layers == "backbone+head"
         self.exteroceptive_start_idx = int(exteroceptive_start_idx)
         self.exteroceptive_end_idx = int(exteroceptive_end_idx)
+        self.exteroceptive_start = 0
+        self.exteroceptive_end = 0
 
 
         # TorchScript/ONNX require all attributes to exist regardless of init branch.
@@ -171,6 +173,8 @@ class MoE_net(nn.Module):
         gate_obs_dim = obs_dim
         if self.use_shared_exteroception:
             extero_start, extero_end = self._resolve_exteroceptive_slice(obs_dim)
+            self.exteroceptive_start = extero_start
+            self.exteroceptive_end = extero_end
             extero_dim = extero_end - extero_start
             proprio_dim = obs_dim - extero_dim
             if extero_dim <= 0 or proprio_dim <= 0:
@@ -256,15 +260,14 @@ class MoE_net(nn.Module):
         """Allow indexing into the MoE to get the underlying expert module
         (keeps compatibility with code doing `actor[0]`).
         
-        Note: For shared backbone/head modes, experts[0] is an inner layer
-        (not the input layer). We wrap it so that `actor[0].in_features`
-        still reports the correct *network* input dimension (obs_dim).
+        Note: In several MoE modes, experts receive transformed inputs rather
+        than the external observation tensor. We wrap `actor[0].in_features`
+        so it still reports the correct *network* input dimension (obs_dim).
         """
         module = self.experts[idx]
-        if self.use_shared_backbone or self.use_shared_backbone_and_head:
-            # The exporter queries actor[0].in_features to size the dummy input.
-            # Monkey-patch so it reflects the true obs_dim, not the expert head input.
-            module.in_features = self.obs_dim  # type: ignore[attr-defined]
+        # The exporter queries actor[0].in_features to size the dummy input.
+        # Monkey-patch so it reflects the true obs_dim, not the expert input.
+        module.in_features = self.obs_dim  # type: ignore[attr-defined]
         return module
 
     @property
@@ -296,7 +299,7 @@ class MoE_net(nn.Module):
         if not self.use_shared_exteroception:
             return obs_input
 
-        start, end = self._resolve_exteroceptive_slice(obs_input.shape[-1])
+        start, end = self.exteroceptive_start, self.exteroceptive_end
         proprioceptive_input = torch.cat([obs_input[:, :start], obs_input[:, end:]], dim=-1)
         return proprioceptive_input
 
@@ -305,7 +308,7 @@ class MoE_net(nn.Module):
         if not self.use_shared_exteroception:
             return obs_input
 
-        start, end = self._resolve_exteroceptive_slice(obs_input.shape[-1])
+        start, end = self.exteroceptive_start, self.exteroceptive_end
         proprioceptive_input = torch.cat([obs_input[:, :start], obs_input[:, end:]], dim=-1)
         return proprioceptive_input
 
@@ -314,7 +317,7 @@ class MoE_net(nn.Module):
             return None
 
         obs_input = x[:, :-1] if self.use_explicit_expert else x
-        start, end = self._resolve_exteroceptive_slice(obs_input.shape[-1])
+        start, end = self.exteroceptive_start, self.exteroceptive_end
         exteroceptive_input = obs_input[:, start:end]
         return self.shared_extero_encoder(exteroceptive_input)
 
