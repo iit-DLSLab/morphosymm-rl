@@ -118,7 +118,6 @@ class ActorCriticMoE(nn.Module):
         self.use_gate_loss = use_gate_loss
         self.use_load_balance_loss = use_load_balance_loss
         self.use_gaussian_mixture = bool(moe_cfg.get("use_gaussian_mixture", False))
-        self.log_expert_stats = moe_cfg["log_expert_stats"]
 
         if "actor" in self.who:
             self.actor = MoE_net(
