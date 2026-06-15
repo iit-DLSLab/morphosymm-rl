@@ -328,11 +328,25 @@ class PPOSymmDataAugmented:
             # Compute KL divergence and adapt the learning rate
             if self.desired_kl is not None and self.schedule == "adaptive":
                 with torch.inference_mode():
-                    if getattr(self.policy, "use_gaussian_mixture", False):
+                    if getattr(self.policy, "use_log_prob_kl", False):
                         old_actions_log_prob = old_actions_log_prob_batch.squeeze(-1)
                         if old_actions_log_prob.shape != actions_log_prob_batch.shape:
                             old_actions_log_prob = old_actions_log_prob.reshape_as(actions_log_prob_batch)
                         kl = old_actions_log_prob - actions_log_prob_batch.detach()
+                    elif getattr(self.policy, "use_masked_action_kl", False):
+                        active_dims = (old_sigma_batch > 0.0) & (sigma_batch > 0.0)
+                        old_sigma = old_sigma_batch.clamp_min(1.0e-6)
+                        sigma = sigma_batch.clamp_min(1.0e-6)
+                        kl = torch.sum(
+                            (
+                                torch.log(sigma / old_sigma)
+                                + (torch.square(old_sigma) + torch.square(old_mu_batch - mu_batch))
+                                / (2.0 * torch.square(sigma))
+                                - 0.5
+                            )
+                            * active_dims,
+                            axis=-1,
+                        )
                     else:
                         kl = torch.sum(
                             torch.log(sigma_batch / old_sigma_batch + 1.0e-5)

@@ -124,6 +124,8 @@ class SymmOnPolicyRunner:
             learn_time = stop - start
             self.current_learning_iteration = it
 
+            action_std = getattr(self.alg.policy, "action_std_for_logging", self.alg.policy.action_std)
+
             # Log information
             self.logger.log(
                 it=it,
@@ -133,7 +135,7 @@ class SymmOnPolicyRunner:
                 learn_time=learn_time,
                 loss_dict=loss_dict,
                 learning_rate=self.alg.learning_rate,
-                action_std=self.alg.policy.action_std,
+                action_std=action_std,
                 rnd_weight=self.alg.rnd.weight if self.alg_cfg["rnd_cfg"] else None,
             )
 

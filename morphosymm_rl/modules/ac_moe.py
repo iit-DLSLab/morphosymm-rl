@@ -57,6 +57,7 @@ class DiagonalGaussianMixture:
         component_means: torch.Tensor,
         component_stds: torch.Tensor,
         mixture_weights: torch.Tensor,
+        component_action_masks: torch.Tensor | None = None,
     ) -> None:
         if mixture_weights.dim() == 3:
             mixture_weights = mixture_weights.squeeze(1)
@@ -65,15 +66,25 @@ class DiagonalGaussianMixture:
         self.component_stds = torch.clamp(component_stds, min=1e-6)
         self.mixture_weights = mixture_weights / mixture_weights.sum(dim=-1, keepdim=True).clamp_min(1e-8)
         self.component_distribution = Normal(self.component_means, self.component_stds)
+        if component_action_masks is None:
+            self.component_action_masks = torch.ones_like(component_means)
+        elif component_action_masks.dim() == 2:
+            self.component_action_masks = component_action_masks.unsqueeze(0).expand_as(component_means)
+        else:
+            self.component_action_masks = component_action_masks.expand_as(component_means)
 
     @property
     def mean(self) -> torch.Tensor:
-        return (self.mixture_weights.unsqueeze(-1) * self.component_means).sum(dim=1)
+        masked_means = self.component_means * self.component_action_masks
+        return (self.mixture_weights.unsqueeze(-1) * masked_means).sum(dim=1)
 
     @property
     def stddev(self) -> torch.Tensor:
+        masked_means = self.component_means * self.component_action_masks
         second_moment = (
-            self.mixture_weights.unsqueeze(-1) * (self.component_stds.square() + self.component_means.square())
+            self.mixture_weights.unsqueeze(-1)
+            * self.component_action_masks
+            * (self.component_stds.square() + masked_means.square())
         ).sum(dim=1)
         variance = (second_moment - self.mean.square()).clamp_min(1e-12)
         return torch.sqrt(variance)
@@ -83,10 +94,13 @@ class DiagonalGaussianMixture:
         gather_idx = expert_idx.unsqueeze(-1).expand(-1, -1, self.component_means.shape[-1])
         means = torch.gather(self.component_means, dim=1, index=gather_idx).squeeze(1)
         stds = torch.gather(self.component_stds, dim=1, index=gather_idx).squeeze(1)
-        return means + torch.randn_like(means) * stds
+        masks = torch.gather(self.component_action_masks, dim=1, index=gather_idx).squeeze(1)
+        return (means + torch.randn_like(means) * stds) * masks
 
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
-        component_log_probs = self.component_distribution.log_prob(actions.unsqueeze(1)).sum(dim=-1)
+        component_log_probs = (
+            self.component_distribution.log_prob(actions.unsqueeze(1)) * self.component_action_masks
+        ).sum(dim=-1)
         log_weights = torch.log(self.mixture_weights.clamp_min(1e-8))
         return torch.logsumexp(log_weights + component_log_probs, dim=-1)
 
@@ -95,8 +109,33 @@ class DiagonalGaussianMixture:
         weights = self.mixture_weights.clamp_min(1e-8)
         weights = weights / weights.sum(dim=-1, keepdim=True)
         mixture_entropy = -(weights * torch.log(weights)).sum(dim=-1)
-        component_entropy = self.component_distribution.entropy().sum(dim=-1)
+        component_entropy = (self.component_distribution.entropy() * self.component_action_masks).sum(dim=-1)
         return mixture_entropy + (weights * component_entropy).sum(dim=-1)
+
+
+class MaskedActionNormal:
+    """Diagonal Normal whose inactive action dimensions are deterministic zeros."""
+
+    def __init__(self, mean: torch.Tensor, std: torch.Tensor, action_mask: torch.Tensor) -> None:
+        self.action_mask = action_mask.to(dtype=mean.dtype, device=mean.device)
+        self.distribution = Normal(mean, torch.clamp(std, min=1e-6))
+
+    @property
+    def mean(self) -> torch.Tensor:
+        return self.distribution.mean * self.action_mask
+
+    @property
+    def stddev(self) -> torch.Tensor:
+        return self.distribution.stddev * self.action_mask
+
+    def sample(self) -> torch.Tensor:
+        return self.distribution.sample() * self.action_mask
+
+    def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
+        return self.distribution.log_prob(actions) * self.action_mask
+
+    def entropy(self) -> torch.Tensor:
+        return self.distribution.entropy() * self.action_mask
 
 
 class MoE_net(nn.Module):
@@ -123,6 +162,7 @@ class MoE_net(nn.Module):
         exteroceptive_start_idx: int = -150,
         exteroceptive_end_idx: int = -2,
         exteroceptive_hidden_dims: list[int] | None = None,
+        expert_output_dims: list[int] | None = None,
     ):
         super().__init__()
         self.obs_dim = obs_dim
@@ -152,6 +192,28 @@ class MoE_net(nn.Module):
         self.exteroceptive_end_idx = int(exteroceptive_end_idx)
         self.exteroceptive_start = 0
         self.exteroceptive_end = 0
+
+        if expert_output_dims is not None and not self.use_explicit_expert:
+            raise ValueError("`expert_output_dims` is supported only with `use_explicit_expert=True`.")
+        if expert_output_dims is None:
+            self.expert_output_dims = [act_dim for _ in range(num_experts)]
+        else:
+            if len(expert_output_dims) != num_experts:
+                raise ValueError(
+                    f"`expert_output_dims` must contain one value per expert: got {len(expert_output_dims)} "
+                    f"values for {num_experts} experts."
+                )
+            self.expert_output_dims = [int(dim) for dim in expert_output_dims]
+            invalid_dims = [dim for dim in self.expert_output_dims if dim <= 0 or dim > act_dim]
+            if len(invalid_dims) > 0:
+                raise ValueError(
+                    f"`expert_output_dims` entries must be in [1, {act_dim}], got {self.expert_output_dims}."
+                )
+        self.has_variable_expert_outputs = any(dim != act_dim for dim in self.expert_output_dims)
+        expert_action_masks = torch.zeros(num_experts, act_dim)
+        for expert_idx, output_dim in enumerate(self.expert_output_dims):
+            expert_action_masks[expert_idx, :output_dim] = 1.0
+        self.register_buffer("expert_action_masks", expert_action_masks)
 
 
         # TorchScript/ONNX require all attributes to exist regardless of init branch.
@@ -225,7 +287,10 @@ class MoE_net(nn.Module):
 
             # Expert-specific nonlinear heads on top of the shared backbone.
             self.experts = nn.ModuleList(
-                [MLP_net(expert_input_dim, [last_dim], act_dim, act) for _ in range(num_experts)]
+                [
+                    MLP_net(expert_input_dim, [last_dim], self.expert_output_dims[i], act)
+                    for i in range(num_experts)
+                ]
             )
         
         else:
@@ -233,7 +298,10 @@ class MoE_net(nn.Module):
             expert_input_dim = model_obs_dim + self.extero_latent_dim
             last_dim = model_obs_dim
             self.experts = nn.ModuleList(
-                [MLP_net(expert_input_dim, hidden_dims, act_dim, act) for _ in range(num_experts)]
+                [
+                    MLP_net(expert_input_dim, hidden_dims, self.expert_output_dims[i], act)
+                    for i in range(num_experts)
+                ]
             )
 
         gate_input_dim = last_dim if (self.use_shared_backbone or self.use_shared_backbone_and_head) else gate_obs_dim
@@ -321,12 +389,35 @@ class MoE_net(nn.Module):
         exteroceptive_input = obs_input[:, start:end]
         return self.shared_extero_encoder(exteroceptive_input)
 
+    def _pad_expert_action_output(self, expert_output: torch.Tensor, expert_idx: int) -> torch.Tensor:
+        output_dim = self.expert_output_dims[expert_idx]
+        if output_dim == self.act_dim:
+            return expert_output
+
+        padded_output = expert_output.new_zeros(expert_output.shape[0], self.act_dim)
+        padded_output[:, :output_dim] = expert_output
+        return padded_output
+
+    def _mask_component_outputs(self, component_out: torch.Tensor) -> torch.Tensor:
+        if not self.has_variable_expert_outputs:
+            return component_out
+
+        action_masks = self.expert_action_masks.transpose(0, 1).unsqueeze(0).to(dtype=component_out.dtype)
+        return component_out * action_masks
+
+    def selected_action_mask(self, x: torch.Tensor) -> torch.Tensor:
+        selector_vals = x[:, -1].round().long().clamp(0, self.num_experts - 1)
+        return self.expert_action_masks.index_select(0, selector_vals)
+
     def _experts_separate(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Each expert is a full MLP; gate receives the raw observation."""
         obs_input = self._prepare_observation_input(x)
         extero_features = self._prepare_exteroceptive_features(x)
         expert_input = obs_input if extero_features is None else torch.cat([obs_input, extero_features], dim=-1)
-        expert_out = torch.stack([e(expert_input) for e in self.experts], dim=-1)  # [B, act_dim, K]
+        expert_out = torch.stack(
+            [self._pad_expert_action_output(e(expert_input), i) for i, e in enumerate(self.experts)],
+            dim=-1,
+        )  # [B, act_dim, K]
         return expert_out, self._prepare_gate_input(x)
 
     def _experts_shared_backbone(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -335,7 +426,10 @@ class MoE_net(nn.Module):
         features = self.shared_backbone(obs_input)
         extero_features = self._prepare_exteroceptive_features(x)
         expert_input = features if extero_features is None else torch.cat([features, extero_features], dim=-1)
-        expert_out = torch.stack([e(expert_input) for e in self.experts], dim=-1)  # [B, act_dim, K]
+        expert_out = torch.stack(
+            [self._pad_expert_action_output(e(expert_input), i) for i, e in enumerate(self.experts)],
+            dim=-1,
+        )  # [B, act_dim, K]
         return expert_out, features
 
     def _experts_shared_backbone_and_head(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -432,13 +526,12 @@ class MoE_net(nn.Module):
             component_out = self.shared_head(expert_out.transpose(1, 2)).transpose(1, 2)
         else:
             component_out = expert_out
+
+        component_out = self._mask_component_outputs(component_out)
         self._last_component_outputs = component_out
 
         # 3) Combine
-        if self.use_shared_backbone_and_head:
-            return self._combine_with_shared_head(expert_out, weights)
-        else:
-            return self._combine_direct(expert_out, weights)
+        return self._combine_direct(component_out, weights)
 
 
     def load_balance_loss(self) -> torch.Tensor:
@@ -483,7 +576,8 @@ class MoE_net(nn.Module):
             w = self._last_gate_weights.squeeze(1)  # [batch, K]
             mean_w = w.mean(dim=0)  # [K]
             uniform = torch.full_like(mean_w, 1.0 / N)
-            return (mean_w * (mean_w / uniform).log()).sum()
+            safe_mean_w = mean_w.clamp_min(1e-8)
+            return (mean_w * (safe_mean_w / uniform).log()).sum()
             #return ((mean_w - 1.0 / N) ** 2).sum()
 
 
@@ -501,7 +595,9 @@ class MoE_net(nn.Module):
         N = self.num_experts
         batch_size = self._last_gate_weights.shape[0]
 
-        if self.is_sparse:
+        if self.use_explicit_expert:
+            topk_idx = self._last_gate_weights.squeeze(1).argmax(dim=-1, keepdim=True)
+        elif self.is_sparse:
             topk_idx = self._last_gate_weights.topk(k=self.top_k, dim=-1).indices  # [batch, K]
         else:
             topk_idx = torch.arange(N, device=self._last_gate_weights.device).unsqueeze(0).expand(batch_size, -1)
@@ -586,6 +682,13 @@ class ActorCriticMoE(nn.Module):
         exteroceptive_start_idx = int(moe_cfg.get("exteroceptive_start_idx", -150))
         exteroceptive_end_idx = int(moe_cfg.get("exteroceptive_end_idx", -2))
         exteroceptive_hidden_dims = moe_cfg.get("exteroceptive_hidden_dims", None)
+        expert_output_dims = moe_cfg.get("expert_output_dims", None)
+        if expert_output_dims is None:
+            expert_output_dims = moe_cfg.get("expert_action_dims", None)
+        if expert_output_dims is None:
+            expert_output_dims = moe_cfg.get("num_outputs_per_expert", None)
+        if expert_output_dims is not None and "actor" not in self.who:
+            raise ValueError("`expert_output_dims` can be used only when `who` includes 'actor'.")
         self.use_gate_loss = use_gate_loss
         self.use_load_balance_loss = use_load_balance_loss
         self.use_gaussian_mixture = bool(moe_cfg.get("use_gaussian_mixture", False))
@@ -608,12 +711,16 @@ class ActorCriticMoE(nn.Module):
                 exteroceptive_start_idx=exteroceptive_start_idx,
                 exteroceptive_end_idx=exteroceptive_end_idx,
                 exteroceptive_hidden_dims=exteroceptive_hidden_dims,
+                expert_output_dims=expert_output_dims,
             )
         else:
             self.actor = MLP_net(num_actor_obs, actor_hidden_dims, num_actions, act)
 
         if self.use_gaussian_mixture and not isinstance(self.actor, MoE_net):
             raise ValueError("`use_gaussian_mixture=True` requires `who` to include 'actor'.")
+        self.use_variable_expert_outputs = isinstance(self.actor, MoE_net) and self.actor.has_variable_expert_outputs
+        self.use_masked_action_kl = self.use_variable_expert_outputs and not self.use_gaussian_mixture
+        self.use_log_prob_kl = self.use_gaussian_mixture
 
         # Actor observation normalization
         self.actor_obs_normalization = actor_obs_normalization
@@ -706,6 +813,14 @@ class ActorCriticMoE(nn.Module):
         return self.distribution.stddev
 
     @property
+    def action_std_for_logging(self) -> torch.Tensor:
+        action_std = self.action_std
+        if isinstance(self.distribution, MaskedActionNormal):
+            active_mask = self.distribution.action_mask > 0.0
+            return action_std[active_mask]
+        return action_std
+
+    @property
     def entropy(self) -> torch.Tensor:
         entropy = self.distribution.entropy()
         if entropy.dim() > 1:
@@ -756,6 +871,7 @@ class ActorCriticMoE(nn.Module):
         return expert_std.unsqueeze(0).expand(batch_size, -1, -1)
 
     def _update_distribution(self, obs: torch.Tensor) -> None:
+        action_mask: torch.Tensor | None = None
         if self.state_dependent_std:
             # Compute mean and standard deviation
             mean_and_std = self.actor(obs)
@@ -774,13 +890,26 @@ class ActorCriticMoE(nn.Module):
                 if self.use_gaussian_mixture:
                     component_means = self.actor._last_component_outputs.transpose(1, 2)
                     weights = self.actor._last_gate_weights.squeeze(1)
-                    self.distribution = DiagonalGaussianMixture(component_means, expert_std, weights)
+                    component_action_masks = None
+                    if self.actor.has_variable_expert_outputs:
+                        component_action_masks = self.actor.expert_action_masks.to(
+                            device=component_means.device,
+                            dtype=component_means.dtype,
+                        )
+                    self.distribution = DiagonalGaussianMixture(
+                        component_means,
+                        expert_std,
+                        weights,
+                        component_action_masks=component_action_masks,
+                    )
                     return
 
                 if self.actor.use_explicit_expert:
                     selector_vals = obs[:, -1].round().long().clamp(0, self.actor.num_experts - 1)
                     batch_idx = torch.arange(obs.shape[0], device=obs.device)
                     std = expert_std[batch_idx, selector_vals]
+                    if self.actor.has_variable_expert_outputs:
+                        action_mask = self.actor.selected_action_mask(obs).to(dtype=mean.dtype, device=mean.device)
 
                 else:
                     # Gating case: collapse expert stds into one diagonal Gaussian.
@@ -800,7 +929,10 @@ class ActorCriticMoE(nn.Module):
         std = torch.clamp(std, 1e-3, 2.0)
 
         # Create distribution
-        self.distribution = Normal(mean, std)
+        if action_mask is None:
+            self.distribution = Normal(mean, std)
+        else:
+            self.distribution = MaskedActionNormal(mean, std, action_mask)
 
     def act(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
         obs = self.get_actor_obs(obs)
