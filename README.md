@@ -12,7 +12,7 @@ pip install -e .
 
 ## How to use
 
-See [here]()
+See [here](https://github.com/iit-DLSLab/morphosymm-rl/blob/feature/moe_cleaning/HOW_TO_USE.md).
 
 ## Citing this work
 
