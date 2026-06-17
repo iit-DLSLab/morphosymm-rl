@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -16,6 +17,94 @@ from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.algorithms import PPO
 from morphosymm_rl.symm_utils import configure_observation_space_representations
+
+
+def _linear_layers(module: nn.Module) -> list[nn.Linear]:
+    return [layer for layer in module.children() if isinstance(layer, nn.Linear)]
+
+
+def _field_representation_matrices(field_type: FieldType, elements, device: torch.device, dtype: torch.dtype):
+    return [field_type.fiber_representation(g).to(device=device, dtype=dtype) for g in elements]
+
+
+def _hidden_representation_matrices(G, size: int, elements, device: torch.device, dtype: torch.dtype):
+    regular_size = G.regular_representation.size
+    regular_blocks = size // regular_size
+    trivial_size = size % regular_size
+    matrices = []
+
+    for g in elements:
+        blocks = [
+            torch.as_tensor(G.regular_representation(g), device=device, dtype=dtype)
+            for _ in range(regular_blocks)
+        ]
+        if trivial_size:
+            blocks.append(torch.eye(trivial_size, device=device, dtype=dtype))
+        matrices.append(torch.block_diag(*blocks) if blocks else torch.empty((0, 0), device=device, dtype=dtype))
+
+    return matrices
+
+
+def _project_linear_layer(layer: nn.Linear, in_mats, out_mats) -> None:
+    projected_weight = torch.zeros_like(layer.weight)
+    original_weight_norm = torch.linalg.vector_norm(layer.weight)
+
+    for in_mat, out_mat in zip(in_mats, out_mats):
+        projected_weight += out_mat.transpose(0, 1) @ layer.weight @ in_mat
+    projected_weight /= len(in_mats)
+
+    projected_weight_norm = torch.linalg.vector_norm(projected_weight)
+    if original_weight_norm > 0 and projected_weight_norm > 0:
+        projected_weight *= original_weight_norm / projected_weight_norm
+
+    layer.weight.copy_(projected_weight)
+
+    if layer.bias is not None:
+        projected_bias = torch.zeros_like(layer.bias)
+        for out_mat in out_mats:
+            projected_bias += out_mat.transpose(0, 1) @ layer.bias
+        layer.bias.copy_(projected_bias / len(out_mats))
+
+
+def _project_mlp_initialization(
+    mlp: nn.Module,
+    in_mats,
+    out_mats,
+    hidden_mats_factory,
+    name: str,
+) -> bool:
+    linear_layers = _linear_layers(mlp)
+    if not linear_layers:
+        warnings.warn(f"Could not symmetrize {name}: no linear layers found.", stacklevel=2)
+        return False
+
+    expected_in_features = in_mats[0].shape[0]
+    if linear_layers[0].in_features != expected_in_features:
+        warnings.warn(
+            f"Could not symmetrize {name}: first layer expects {linear_layers[0].in_features} inputs, "
+            f"but the symmetry representation has size {expected_in_features}.",
+            stacklevel=2,
+        )
+        return False
+
+    previous_mats = in_mats
+    for layer_idx, layer in enumerate(linear_layers):
+        is_last_layer = layer_idx == len(linear_layers) - 1
+        next_mats = out_mats if is_last_layer else hidden_mats_factory(layer.out_features)
+
+        if layer.in_features != previous_mats[0].shape[0] or layer.out_features != next_mats[0].shape[0]:
+            warnings.warn(
+                f"Could not symmetrize {name}: layer {layer_idx} has shape "
+                f"{layer.out_features}x{layer.in_features}, expected "
+                f"{next_mats[0].shape[0]}x{previous_mats[0].shape[0]}.",
+                stacklevel=2,
+            )
+            return False
+
+        _project_linear_layer(layer, previous_mats, next_mats)
+        previous_mats = next_mats
+
+    return True
 
 
 class PPOSymmDataAugmented:
@@ -62,9 +151,6 @@ class PPOSymmDataAugmented:
         self.policy = policy
         self.policy.to(self.device)
 
-        # Create the optimizer
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
-
         # PPO parameters
         self.clip_param = clip_param
         self.num_learning_epochs = num_learning_epochs
@@ -86,9 +172,14 @@ class PPOSymmDataAugmented:
         action_space_names = morphologycal_symmetries_cfg["action_space_names"]
         joints_order = morphologycal_symmetries_cfg["joints_order"]
         robot_name = morphologycal_symmetries_cfg["robot_name"]
+        symmetric_initialization = morphologycal_symmetries_cfg.pop("symmetric_initialization", True)
 
-        G_actor, obs_reps_actor = configure_observation_space_representations(robot_name, obs_space_names_actor, joints_order)
-        G_critic, obs_reps_critic = configure_observation_space_representations(robot_name, obs_space_names_critic, joints_order)
+        G_actor, obs_reps_actor = configure_observation_space_representations(
+            robot_name, obs_space_names_actor, joints_order
+        )
+        G_critic, obs_reps_critic = configure_observation_space_representations(
+            robot_name, obs_space_names_critic, joints_order
+        )
 
         obs_space_reps_actor = [obs_reps_actor[n] for n in obs_space_names_actor]
         obs_space_reps_critic = [obs_reps_critic[n] for n in obs_space_names_critic]
@@ -103,6 +194,11 @@ class PPOSymmDataAugmented:
         # Critic replica
         self.critic_in_field_type = FieldType(gspace, obs_space_reps_critic)
 
+        if symmetric_initialization:
+            self._apply_symmetric_initialization()
+
+        # Create the optimizer after the optional symmetric projection of the initial parameters.
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
 
         # Add storage
         #self.storage = storage
@@ -135,6 +231,69 @@ class PPOSymmDataAugmented:
             storage_hack.device,
         )
         self.transition = RolloutStorage.Transition()
+
+    def _apply_symmetric_initialization(self) -> None:
+        """Project the initial MLP weights to symmetry-compatible subspaces."""
+        with torch.no_grad():
+            dtype = next(self.policy.parameters()).dtype
+            device = next(self.policy.parameters()).device
+            elements = self.G.elements
+            hidden_mats_cache = {}
+
+            actor_in_mats = _field_representation_matrices(self.actor_in_type, elements, device, dtype)
+            actor_out_mats = _field_representation_matrices(self.actor_out_type, elements, device, dtype)
+            critic_in_mats = _field_representation_matrices(self.critic_in_field_type, elements, device, dtype)
+            critic_out_mats = [torch.ones((1, 1), device=device, dtype=dtype) for _ in elements]
+
+            def hidden_mats_factory(size: int):
+                if size not in hidden_mats_cache:
+                    hidden_mats_cache[size] = _hidden_representation_matrices(self.G, size, elements, device, dtype)
+                return hidden_mats_cache[size]
+
+            actor_layers = _linear_layers(self.policy.actor)
+            if actor_layers:
+                actor_last_out_features = actor_layers[-1].out_features
+                if actor_last_out_features == self.actor_out_type.size:
+                    projected_actor_out_mats = actor_out_mats
+                elif actor_last_out_features == 2 * self.actor_out_type.size:
+                    projected_actor_out_mats = [
+                        torch.block_diag(action_mat, action_mat.abs()) for action_mat in actor_out_mats
+                    ]
+                else:
+                    projected_actor_out_mats = actor_out_mats
+            else:
+                projected_actor_out_mats = actor_out_mats
+
+            _project_mlp_initialization(
+                self.policy.actor,
+                actor_in_mats,
+                projected_actor_out_mats,
+                hidden_mats_factory,
+                "actor",
+            )
+            _project_mlp_initialization(
+                self.policy.critic,
+                critic_in_mats,
+                critic_out_mats,
+                hidden_mats_factory,
+                "critic",
+            )
+            self._project_action_std_initialization(actor_out_mats)
+
+    def _project_action_std_initialization(self, actor_out_mats) -> None:
+        std_param = None
+        if hasattr(self.policy, "std"):
+            std_param = self.policy.std
+        elif hasattr(self.policy, "log_std"):
+            std_param = self.policy.log_std
+
+        if std_param is None or std_param.ndim != 1 or std_param.shape[0] != self.actor_out_type.size:
+            return
+
+        projected_std = torch.zeros_like(std_param)
+        for action_mat in actor_out_mats:
+            projected_std += action_mat.abs().transpose(0, 1) @ std_param
+        std_param.copy_(projected_std / len(actor_out_mats))
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
