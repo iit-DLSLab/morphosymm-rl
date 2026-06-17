@@ -42,6 +42,7 @@ class SymmOnPolicyRunner:
 
         # Morphological symmetries configuration
         self.morphologycal_symmetries_cfg = train_cfg["morphologycal_symmetries_cfg"]
+        self.schedule_fixed_to_adaptive_switch = self.morphologycal_symmetries_cfg.get("schedule_fixed_to_adaptive_switch", None)
 
         # Mixture of Expert 
         if "moe_cfg" in train_cfg:
@@ -93,6 +94,11 @@ class SymmOnPolicyRunner:
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
         for it in range(start_it, total_it):
+            
+            if(self.schedule_fixed_to_adaptive_switch is not None): 
+                if it == self.schedule_fixed_to_adaptive_switch:
+                    self.alg.schedule = "adaptive"
+                    
             start = time.time()
             # Rollout
             with torch.inference_mode():
