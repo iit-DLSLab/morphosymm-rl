@@ -12,7 +12,7 @@ pip install -e .
 
 ## How to use
 
-To use it, you just need first to change the usual rsl_rl_ppo_cfg.py file of your task in IsaacLab. Second, you need to use ad-hoc train.py and play.py files to launch your training/testing. See [here](https://github.com/iit-DLSLab/basic-locomotion-isaaclab/tree/main/scripts/morphosymm_rl) for an example.
+See [here]()
 
 ## Citing this work
 
