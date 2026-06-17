@@ -16,10 +16,13 @@ from hydra.core.global_hydra import GlobalHydra
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.algorithms import PPO
+from morphosymm_rl.modules.ac_moe_common import BaseMoENet
 from morphosymm_rl.symm_utils import configure_observation_space_representations
 
 
 def _linear_layers(module: nn.Module) -> list[nn.Linear]:
+    if isinstance(module, nn.Linear):
+        return [module]
     return [layer for layer in module.children() if isinstance(layer, nn.Linear)]
 
 
@@ -105,6 +108,167 @@ def _project_mlp_initialization(
         previous_mats = next_mats
 
     return True
+
+
+def _trivial_representation_matrices(size: int, reference_mats) -> list[torch.Tensor]:
+    return [torch.eye(size, device=mat.device, dtype=mat.dtype) for mat in reference_mats]
+
+
+def _strip_trailing_trivial_dimension(mats) -> list[torch.Tensor] | None:
+    stripped_mats = []
+    for mat in mats:
+        if mat.shape[0] == 0 or mat.shape[0] != mat.shape[1]:
+            return None
+
+        trailing_col = mat[:-1, -1]
+        trailing_row = mat[-1, :-1]
+        trailing_value = mat[-1, -1]
+        if not torch.allclose(trailing_col, torch.zeros_like(trailing_col)):
+            return None
+        if not torch.allclose(trailing_row, torch.zeros_like(trailing_row)):
+            return None
+        if not torch.allclose(trailing_value, torch.ones_like(trailing_value)):
+            return None
+
+        stripped_mats.append(mat[:-1, :-1])
+
+    return stripped_mats
+
+
+def _moe_model_input_mats(moe_net: BaseMoENet, in_mats, name: str):
+    model_input_size = moe_net.obs_dim - int(moe_net.use_explicit_expert)
+    representation_size = in_mats[0].shape[0]
+
+    if representation_size == model_input_size:
+        return in_mats
+
+    if moe_net.use_explicit_expert and representation_size == moe_net.obs_dim:
+        stripped_mats = _strip_trailing_trivial_dimension(in_mats)
+        if stripped_mats is not None and stripped_mats[0].shape[0] == model_input_size:
+            return stripped_mats
+
+        warnings.warn(
+            f"Could not symmetrize {name}: explicit-expert selector must be an unmixed trailing "
+            "trivial scalar when it is included in the symmetry representation.",
+            stacklevel=2,
+        )
+        return None
+
+    warnings.warn(
+        f"Could not symmetrize {name}: MoE model input has size {model_input_size}, "
+        f"but the symmetry representation has size {representation_size}.",
+        stacklevel=2,
+    )
+    return None
+
+
+def _project_moe_initialization(
+    moe_net: BaseMoENet,
+    in_mats,
+    out_mats,
+    hidden_mats_factory,
+    name: str,
+) -> bool:
+    if moe_net.has_variable_expert_outputs:
+        warnings.warn(
+            f"Could not symmetrize {name}: variable expert output dimensions are not supported because "
+            "their action masks may not define symmetry-invariant action subspaces.",
+            stacklevel=2,
+        )
+        return False
+
+    model_in_mats = _moe_model_input_mats(moe_net, in_mats, name)
+    if model_in_mats is None:
+        return False
+
+    success = True
+    expert_in_mats = model_in_mats
+    gate_in_mats = model_in_mats
+
+    if moe_net.use_shared_backbone or moe_net.use_shared_backbone_and_head:
+        backbone_layers = _linear_layers(moe_net.shared_backbone)
+        if not backbone_layers:
+            warnings.warn(f"Could not symmetrize {name}.shared_backbone: no linear layers found.", stacklevel=2)
+            return False
+
+        backbone_out_mats = hidden_mats_factory(backbone_layers[-1].out_features)
+        success &= _project_mlp_initialization(
+            moe_net.shared_backbone,
+            model_in_mats,
+            backbone_out_mats,
+            hidden_mats_factory,
+            f"{name}.shared_backbone",
+        )
+        expert_in_mats = backbone_out_mats
+        gate_in_mats = backbone_out_mats
+
+    head_in_mats = None
+    for expert_idx, expert in enumerate(moe_net.experts):
+        expert_layers = _linear_layers(expert)
+        if not expert_layers:
+            warnings.warn(f"Could not symmetrize {name}.experts[{expert_idx}]: no linear layers found.", stacklevel=2)
+            success = False
+            continue
+
+        if moe_net.use_shared_backbone_and_head:
+            expert_out_mats = hidden_mats_factory(expert_layers[-1].out_features)
+            if head_in_mats is None:
+                head_in_mats = expert_out_mats
+            elif expert_layers[-1].out_features != head_in_mats[0].shape[0]:
+                warnings.warn(
+                    f"Could not symmetrize {name}.experts[{expert_idx}]: shared-head experts must have "
+                    "matching output sizes.",
+                    stacklevel=2,
+                )
+                success = False
+                continue
+        else:
+            expert_out_mats = out_mats
+
+        success &= _project_mlp_initialization(
+            expert,
+            expert_in_mats,
+            expert_out_mats,
+            hidden_mats_factory,
+            f"{name}.experts[{expert_idx}]",
+        )
+
+    if moe_net.use_shared_backbone_and_head:
+        if head_in_mats is None:
+            warnings.warn(f"Could not symmetrize {name}.shared_head: no expert output representation.", stacklevel=2)
+            success = False
+        else:
+            success &= _project_mlp_initialization(
+                moe_net.shared_head,
+                head_in_mats,
+                out_mats,
+                hidden_mats_factory,
+                f"{name}.shared_head",
+            )
+
+    if not moe_net.use_explicit_expert:
+        gate_out_mats = _trivial_representation_matrices(moe_net.num_experts, gate_in_mats)
+        success &= _project_mlp_initialization(
+            moe_net.gate,
+            gate_in_mats,
+            gate_out_mats,
+            hidden_mats_factory,
+            f"{name}.gate",
+        )
+
+    return success
+
+
+def _project_network_initialization(
+    network: nn.Module,
+    in_mats,
+    out_mats,
+    hidden_mats_factory,
+    name: str,
+) -> bool:
+    if isinstance(network, BaseMoENet):
+        return _project_moe_initialization(network, in_mats, out_mats, hidden_mats_factory, name)
+    return _project_mlp_initialization(network, in_mats, out_mats, hidden_mats_factory, name)
 
 
 class PPOSymmDataAugmented:
@@ -233,7 +397,7 @@ class PPOSymmDataAugmented:
         self.transition = RolloutStorage.Transition()
 
     def _apply_symmetric_initialization(self) -> None:
-        """Project the initial MLP weights to symmetry-compatible subspaces."""
+        """Project the initial policy weights to symmetry-compatible subspaces."""
         with torch.no_grad():
             dtype = next(self.policy.parameters()).dtype
             device = next(self.policy.parameters()).device
@@ -250,28 +414,31 @@ class PPOSymmDataAugmented:
                     hidden_mats_cache[size] = _hidden_representation_matrices(self.G, size, elements, device, dtype)
                 return hidden_mats_cache[size]
 
-            actor_layers = _linear_layers(self.policy.actor)
-            if actor_layers:
-                actor_last_out_features = actor_layers[-1].out_features
-                if actor_last_out_features == self.actor_out_type.size:
-                    projected_actor_out_mats = actor_out_mats
-                elif actor_last_out_features == 2 * self.actor_out_type.size:
-                    projected_actor_out_mats = [
-                        torch.block_diag(action_mat, action_mat.abs()) for action_mat in actor_out_mats
-                    ]
+            if isinstance(self.policy.actor, BaseMoENet):
+                projected_actor_out_mats = actor_out_mats
+            else:
+                actor_layers = _linear_layers(self.policy.actor)
+                if actor_layers:
+                    actor_last_out_features = actor_layers[-1].out_features
+                    if actor_last_out_features == self.actor_out_type.size:
+                        projected_actor_out_mats = actor_out_mats
+                    elif actor_last_out_features == 2 * self.actor_out_type.size:
+                        projected_actor_out_mats = [
+                            torch.block_diag(action_mat, action_mat.abs()) for action_mat in actor_out_mats
+                        ]
+                    else:
+                        projected_actor_out_mats = actor_out_mats
                 else:
                     projected_actor_out_mats = actor_out_mats
-            else:
-                projected_actor_out_mats = actor_out_mats
 
-            _project_mlp_initialization(
+            _project_network_initialization(
                 self.policy.actor,
                 actor_in_mats,
                 projected_actor_out_mats,
                 hidden_mats_factory,
                 "actor",
             )
-            _project_mlp_initialization(
+            _project_network_initialization(
                 self.policy.critic,
                 critic_in_mats,
                 critic_out_mats,
@@ -287,13 +454,19 @@ class PPOSymmDataAugmented:
         elif hasattr(self.policy, "log_std"):
             std_param = self.policy.log_std
 
-        if std_param is None or std_param.ndim != 1 or std_param.shape[0] != self.actor_out_type.size:
+        if std_param is None:
             return
 
-        projected_std = torch.zeros_like(std_param)
-        for action_mat in actor_out_mats:
-            projected_std += action_mat.abs().transpose(0, 1) @ std_param
-        std_param.copy_(projected_std / len(actor_out_mats))
+        if std_param.ndim == 1 and std_param.shape[0] == self.actor_out_type.size:
+            projected_std = torch.zeros_like(std_param)
+            for action_mat in actor_out_mats:
+                projected_std += action_mat.abs().transpose(0, 1) @ std_param
+            std_param.copy_(projected_std / len(actor_out_mats))
+        elif std_param.ndim == 2 and std_param.shape[1] == self.actor_out_type.size:
+            projected_std = torch.zeros_like(std_param)
+            for action_mat in actor_out_mats:
+                projected_std += std_param @ action_mat.abs()
+            std_param.copy_(projected_std / len(actor_out_mats))
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
