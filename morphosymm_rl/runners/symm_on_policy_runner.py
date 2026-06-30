@@ -25,7 +25,6 @@ from rsl_rl.utils import resolve_callable, resolve_obs_groups
 from rsl_rl.utils.logger import Logger
 
 from morphosymm_rl.modules.ac_symm import ActorCriticSymm
-from morphosymm_rl.modules.ac_moe import ActorCriticMoE
 from morphosymm_rl.algorithms.ppo_symm_data_augment import PPOSymmDataAugmented
 from morphosymm_rl.algorithms.ppo import PPO
 
@@ -44,11 +43,6 @@ class SymmOnPolicyRunner:
         self.morphologycal_symmetries_cfg = train_cfg["morphologycal_symmetries_cfg"]
         self.schedule_fixed_to_adaptive_switch = self.morphologycal_symmetries_cfg.get("schedule_fixed_to_adaptive_switch", None)
 
-        # Mixture of Expert 
-        if "moe_cfg" in train_cfg:
-            self.moe_cfg = train_cfg["moe_cfg"]
-        else:
-            self.moe_cfg = None
 
         # Setup multi-GPU training if enabled
         self._configure_multi_gpu()
@@ -293,11 +287,6 @@ class SymmOnPolicyRunner:
             self.policy_cfg.pop("class_name")
             actor_critic: ActorCriticSymm = ActorCriticSymm(
                 num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg, **self.morphologycal_symmetries_cfg
-            ).to(self.device)
-        elif self.policy_cfg["class_name"] == "ActorCriticMoE":
-            self.policy_cfg.pop("class_name")
-            actor_critic: ActorCriticMoE = ActorCriticMoE(
-                obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg, **self.moe_cfg
             ).to(self.device)
         else:
             actor_critic_class = resolve_callable(self.policy_cfg.pop("class_name"))

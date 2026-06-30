@@ -18,7 +18,6 @@ morphosymm_rl/
     ppo_symm_data_augment.py     # PPO variant that augments rollouts with morphological symmetries.
   modules/
     ac_symm.py                   # Equivariant actor and invariant critic.
-    ac_moe*.py                   # Mixture-of-experts actor-critic variants.
     normalizer.py                # Equivariant empirical normalization.
   runners/
     symm_on_policy_runner.py     # IsaacLab/RSL-RL runner that constructs the policy and algorithm.
@@ -53,7 +52,7 @@ At runtime the flow is:
 IsaacLab VecEnv
   -> SymmOnPolicyRunner
     -> policy module
-      -> regular RSL-RL actor-critic, ActorCriticSymm, or ActorCriticMoE
+      -> regular RSL-RL ActorCritic or ActorCriticSymm
     -> algorithm
       -> PPO or PPOSymmDataAugmented
     -> symm_utils.configure_observation_space_representations(...)

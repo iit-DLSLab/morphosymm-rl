@@ -378,17 +378,6 @@ class PPO:
                 mseloss = torch.nn.MSELoss()
                 rnd_loss = mseloss(predicted_embedding, target_embedding)
 
-            # MoE loss
-            if getattr(self.policy, "use_gate_loss", False) or getattr(self.policy.actor, "use_gate_loss", False):
-                gate_entropy = self.policy.gate_entropy()
-                gate_entropy_coef = 0.0001
-                loss -= gate_entropy_coef * gate_entropy
-
-            # Load-balancing auxiliary loss (Fedus et al., 2022)
-            if hasattr(self.policy, "use_load_balance_loss") and self.policy.use_load_balance_loss:
-                lb_loss = self.policy.load_balance_loss()
-                load_balance_coef = 0.0001
-                loss += load_balance_coef * lb_loss
 
             # Compute the gradients for PPO
             self.optimizer.zero_grad()

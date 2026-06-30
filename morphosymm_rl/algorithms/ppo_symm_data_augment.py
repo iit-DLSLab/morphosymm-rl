@@ -16,7 +16,6 @@ from hydra.core.global_hydra import GlobalHydra
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.algorithms import PPO
-from morphosymm_rl.modules.ac_moe_common import BaseMoENet
 from morphosymm_rl.symm_utils import configure_observation_space_representations
 
 
@@ -135,129 +134,6 @@ def _strip_trailing_trivial_dimension(mats) -> list[torch.Tensor] | None:
     return stripped_mats
 
 
-def _moe_model_input_mats(moe_net: BaseMoENet, in_mats, name: str):
-    model_input_size = moe_net.obs_dim - int(moe_net.use_explicit_expert)
-    representation_size = in_mats[0].shape[0]
-
-    if representation_size == model_input_size:
-        return in_mats
-
-    if moe_net.use_explicit_expert and representation_size == moe_net.obs_dim:
-        stripped_mats = _strip_trailing_trivial_dimension(in_mats)
-        if stripped_mats is not None and stripped_mats[0].shape[0] == model_input_size:
-            return stripped_mats
-
-        warnings.warn(
-            f"Could not symmetrize {name}: explicit-expert selector must be an unmixed trailing "
-            "trivial scalar when it is included in the symmetry representation.",
-            stacklevel=2,
-        )
-        return None
-
-    warnings.warn(
-        f"Could not symmetrize {name}: MoE model input has size {model_input_size}, "
-        f"but the symmetry representation has size {representation_size}.",
-        stacklevel=2,
-    )
-    return None
-
-
-def _project_moe_initialization(
-    moe_net: BaseMoENet,
-    in_mats,
-    out_mats,
-    hidden_mats_factory,
-    name: str,
-) -> bool:
-    if moe_net.has_variable_expert_outputs:
-        warnings.warn(
-            f"Could not symmetrize {name}: variable expert output dimensions are not supported because "
-            "their action masks may not define symmetry-invariant action subspaces.",
-            stacklevel=2,
-        )
-        return False
-
-    model_in_mats = _moe_model_input_mats(moe_net, in_mats, name)
-    if model_in_mats is None:
-        return False
-
-    success = True
-    expert_in_mats = model_in_mats
-    gate_in_mats = model_in_mats
-
-    if moe_net.use_shared_backbone or moe_net.use_shared_backbone_and_head:
-        backbone_layers = _linear_layers(moe_net.shared_backbone)
-        if not backbone_layers:
-            warnings.warn(f"Could not symmetrize {name}.shared_backbone: no linear layers found.", stacklevel=2)
-            return False
-
-        backbone_out_mats = hidden_mats_factory(backbone_layers[-1].out_features)
-        success &= _project_mlp_initialization(
-            moe_net.shared_backbone,
-            model_in_mats,
-            backbone_out_mats,
-            hidden_mats_factory,
-            f"{name}.shared_backbone",
-        )
-        expert_in_mats = backbone_out_mats
-        gate_in_mats = backbone_out_mats
-
-    head_in_mats = None
-    for expert_idx, expert in enumerate(moe_net.experts):
-        expert_layers = _linear_layers(expert)
-        if not expert_layers:
-            warnings.warn(f"Could not symmetrize {name}.experts[{expert_idx}]: no linear layers found.", stacklevel=2)
-            success = False
-            continue
-
-        if moe_net.use_shared_backbone_and_head:
-            expert_out_mats = hidden_mats_factory(expert_layers[-1].out_features)
-            if head_in_mats is None:
-                head_in_mats = expert_out_mats
-            elif expert_layers[-1].out_features != head_in_mats[0].shape[0]:
-                warnings.warn(
-                    f"Could not symmetrize {name}.experts[{expert_idx}]: shared-head experts must have "
-                    "matching output sizes.",
-                    stacklevel=2,
-                )
-                success = False
-                continue
-        else:
-            expert_out_mats = out_mats
-
-        success &= _project_mlp_initialization(
-            expert,
-            expert_in_mats,
-            expert_out_mats,
-            hidden_mats_factory,
-            f"{name}.experts[{expert_idx}]",
-        )
-
-    if moe_net.use_shared_backbone_and_head:
-        if head_in_mats is None:
-            warnings.warn(f"Could not symmetrize {name}.shared_head: no expert output representation.", stacklevel=2)
-            success = False
-        else:
-            success &= _project_mlp_initialization(
-                moe_net.shared_head,
-                head_in_mats,
-                out_mats,
-                hidden_mats_factory,
-                f"{name}.shared_head",
-            )
-
-    if not moe_net.use_explicit_expert:
-        gate_out_mats = _trivial_representation_matrices(moe_net.num_experts, gate_in_mats)
-        success &= _project_mlp_initialization(
-            moe_net.gate,
-            gate_in_mats,
-            gate_out_mats,
-            hidden_mats_factory,
-            f"{name}.gate",
-        )
-
-    return success
-
 
 def _project_network_initialization(
     network: nn.Module,
@@ -266,8 +142,6 @@ def _project_network_initialization(
     hidden_mats_factory,
     name: str,
 ) -> bool:
-    if isinstance(network, BaseMoENet):
-        return _project_moe_initialization(network, in_mats, out_mats, hidden_mats_factory, name)
     return _project_mlp_initialization(network, in_mats, out_mats, hidden_mats_factory, name)
 
 
@@ -414,22 +288,19 @@ class PPOSymmDataAugmented:
                     hidden_mats_cache[size] = _hidden_representation_matrices(self.G, size, elements, device, dtype)
                 return hidden_mats_cache[size]
 
-            if isinstance(self.policy.actor, BaseMoENet):
-                projected_actor_out_mats = actor_out_mats
-            else:
-                actor_layers = _linear_layers(self.policy.actor)
-                if actor_layers:
-                    actor_last_out_features = actor_layers[-1].out_features
-                    if actor_last_out_features == self.actor_out_type.size:
-                        projected_actor_out_mats = actor_out_mats
-                    elif actor_last_out_features == 2 * self.actor_out_type.size:
-                        projected_actor_out_mats = [
-                            torch.block_diag(action_mat, action_mat.abs()) for action_mat in actor_out_mats
-                        ]
-                    else:
-                        projected_actor_out_mats = actor_out_mats
+            actor_layers = _linear_layers(self.policy.actor)
+            if actor_layers:
+                actor_last_out_features = actor_layers[-1].out_features
+                if actor_last_out_features == self.actor_out_type.size:
+                    projected_actor_out_mats = actor_out_mats
+                elif actor_last_out_features == 2 * self.actor_out_type.size:
+                    projected_actor_out_mats = [
+                        torch.block_diag(action_mat, action_mat.abs()) for action_mat in actor_out_mats
+                    ]
                 else:
                     projected_actor_out_mats = actor_out_mats
+            else:
+                projected_actor_out_mats = actor_out_mats
 
             _project_network_initialization(
                 self.policy.actor,
@@ -782,18 +653,6 @@ class PPOSymmDataAugmented:
                 mseloss = torch.nn.MSELoss()
                 rnd_loss = mseloss(predicted_embedding, target_embedding)
 
-
-            # MoE loss
-            if getattr(self.policy, "use_gate_loss", False) or getattr(self.policy.actor, "use_gate_loss", False):
-                gate_entropy = self.policy.gate_entropy()
-                gate_entropy_coef = 0.0001
-                loss -= gate_entropy_coef * gate_entropy
-
-            # Load-balancing auxiliary loss (Fedus et al., 2022)
-            if hasattr(self.policy, "use_load_balance_loss") and self.policy.use_load_balance_loss:
-                lb_loss = self.policy.load_balance_loss()
-                load_balance_coef = 0.0001
-                loss += load_balance_coef * lb_loss
 
             # Compute the gradients for PPO
             self.optimizer.zero_grad()
