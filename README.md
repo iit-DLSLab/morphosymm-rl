@@ -10,7 +10,7 @@ morphosymm-rl is a reinforcement learning library for IsaacLab that extends the 
 Features:
 
 - data-augmentation
-- explicit equivariant neural network via [symmetric_learning](https://github.com/Danfoa/symmetric_learning)
+- explicit equivariant neural networks via [symmetric_learning](https://github.com/Danfoa/symmetric_learning)
 
 
 ## Installation
