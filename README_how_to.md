@@ -9,6 +9,12 @@ This guide explains what is inside this repository and how to wire it into an Is
 
 The key idea is that `morphosymm-rl` does not define the robot symmetries itself. It asks the `morpho_symm` package for the robot's symmetry group and its representations, then uses those representations to augment PPO data or build equivariant/invariant neural networks.
 
+
+## Minimal Config Skeleton to add in your isaaclab!
+
+See in the folder example!
+
+
 ## Repository Layout
 
 ```text
@@ -120,10 +126,6 @@ Set the policy class to:
 - an equivariant multivariate normal action distribution
 
 In this mode you can usually pair the policy with regular `"PPO"`, because the architecture itself carries the symmetry. You can still experiment with the augmented PPO path, but start with one symmetry mechanism first so debugging is easier.
-
-## Use the Symmetric Runner
-
-See [here](https://github.com/iit-DLSLab/basic-locomotion-isaaclab/tree/main/scripts/morphosymm_rl) for an example.
 
 ## Configure Morphological Symmetries
 
@@ -313,7 +315,3 @@ then `obs_space_names_actor` must use the same order:
 ```
 
 If your actor and critic observations differ, make `obs_space_names_actor` and `obs_space_names_critic` different. Do not copy the actor list into the critic config unless the critic tensor is actually identical.
-
-## Minimal Config Skeleton
-
-See in example!
