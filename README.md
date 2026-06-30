@@ -1,3 +1,8 @@
+<div style="text-align: left;">
+  <img src="https://img.shields.io/badge/IsaacLab%20-v2.3.2-green" alt="IsaacLab v2.3.0" style="margin-bottom: 1px;">
+  <img src="https://img.shields.io/badge/rsl_rl%20-v3.3.0-brown" alt="rsl-rl v3.3.0" style="margin-bottom: 1px;">
+</div>
+
 ## Overview
 
 morphosymm-rl is a reinforcement learning library for IsaacLab that extends the Proximal Policy Optimization (PPO) implementation of [RSL-RL](https://github.com/leggedrobotics/rsl_rl) with [Morphological Symmetries](https://arxiv.org/abs/2402.15552). This enables data augmentation of robotics systems, or directly embedding symmetry constraints through equivariant neural networks in the actor-critic structure. See the end of this README if you want to cite our work.
