@@ -12,7 +12,7 @@ pip install -e .
 
 ## How to use
 
-See [here](https://github.com/iit-DLSLab/morphosymm-rl/blob/feature/main/HOW_TO_USE.md).
+See [here](https://github.com/iit-DLSLab/morphosymm-rl/blob/feature/main/README_how_to.md).
 
 ## Citing this work
 
