@@ -1,10 +1,156 @@
 # Created by Daniel Ordoñez (daniels.ordonez@gmail.com) at 14/03/25
 from __future__ import annotations
 
+import re
 from typing import Sequence
 
 import numpy as np
-from escnn.group import Group, Representation
+from escnn.group import Group, Representation, directsum
+
+
+_HEIGHTMAP_NAME_RE = re.compile(r"^heightmap:(?P<rows>\d+)x(?P<cols>\d+)$")
+
+
+def _parse_heightmap_shape(obs_name: str) -> tuple[int, int]:
+    match = _HEIGHTMAP_NAME_RE.match(obs_name)
+    if match is None:
+        raise ValueError(
+            "Heightmap observations must be named as 'heightmap:<rows>x<cols>', "
+            f"for example 'heightmap:64x32'. Got {obs_name!r}."
+        )
+
+    rows = int(match.group("rows"))
+    cols = int(match.group("cols"))
+    if rows <= 0 or cols <= 0:
+        raise ValueError(f"Heightmap dimensions must be positive. Got {obs_name!r}.")
+
+    return rows, cols
+
+
+def _heightmap_flat_index(row: int, col: int, rows: int) -> int:
+    return col * rows + row
+
+
+def _heightmap_signed_permutation_action(rep_Rd: Representation, group_element) -> np.ndarray:
+    action = rep_Rd(group_element)[:2, :2]
+    rounded_action = np.rint(action).astype(int)
+
+    is_integral = np.allclose(action, rounded_action)
+    is_signed_permutation = (
+        np.all(np.isin(rounded_action, [-1, 0, 1]))
+        and np.all(np.sum(np.abs(rounded_action), axis=0) == 1)
+        and np.all(np.sum(np.abs(rounded_action), axis=1) == 1)
+    )
+    if not (is_integral and is_signed_permutation):
+        raise NotImplementedError(
+            "Heightmap observations only support signed-permutation horizontal actions. "
+            f"Got action:\n{action}"
+        )
+
+    return rounded_action
+
+
+def _heightmap_permutation(
+    rows: int,
+    cols: int,
+    rep_Rd: Representation,
+    group_element,
+) -> np.ndarray:
+    """Return dst indices for flattened src indices.
+
+    Heightmaps are flattened in column-major order from the bottom-right corner:
+    index 0 is row 0, col 0; index 1 is one row up in the same column.
+    """
+    action = _heightmap_signed_permutation_action(rep_Rd, group_element)
+
+    row_coords = {2 * row - (rows - 1): row for row in range(rows)}
+    col_coords = {2 * col - (cols - 1): col for col in range(cols)}
+    permutation = np.empty(rows * cols, dtype=int)
+
+    for row in range(rows):
+        for col in range(cols):
+            src_idx = _heightmap_flat_index(row, col, rows)
+            src_coords = np.array([2 * row - (rows - 1), 2 * col - (cols - 1)], dtype=int)
+            dst_row_coord, dst_col_coord = action @ src_coords
+
+            if dst_row_coord not in row_coords or dst_col_coord not in col_coords:
+                raise NotImplementedError(
+                    "Heightmap action maps samples outside the declared grid. "
+                    "Axis swaps require matching row/column coordinate sets."
+                )
+
+            dst_row = row_coords[dst_row_coord]
+            dst_col = col_coords[dst_col_coord]
+            permutation[src_idx] = _heightmap_flat_index(dst_row, dst_col, rows)
+
+    return permutation
+
+
+def _permutation_matrix(permutation: np.ndarray) -> np.ndarray:
+    matrix = np.zeros((permutation.size, permutation.size))
+    matrix[permutation, np.arange(permutation.size)] = 1.0
+    return matrix
+
+
+def _heightmap_representation(
+    G: Group,
+    rep_Rd: Representation,
+    rows: int,
+    cols: int,
+    escnn_representation_form_mapping,
+) -> Representation:
+    permutations = {g: _heightmap_permutation(rows, cols, rep_Rd, g) for g in G.elements}
+    full_representation = {g: _permutation_matrix(permutation) for g, permutation in permutations.items()}
+
+    visited = np.zeros(rows * cols, dtype=bool)
+    orbit_reps = []
+    orbit_to_flat = np.zeros((rows * cols, rows * cols))
+    orbit_basis_idx = 0
+    orbit_rep_cache = {}
+
+    for first_idx in range(rows * cols):
+        if visited[first_idx]:
+            continue
+
+        orbit = sorted({permutation[first_idx] for permutation in permutations.values()})
+        for idx in orbit:
+            visited[idx] = True
+
+        orbit_pos = {idx: pos for pos, idx in enumerate(orbit)}
+        orbit_signature = tuple(
+            tuple(orbit_pos[permutations[g][idx]] for idx in orbit)
+            for g in G.elements
+        )
+        orbit_rep = orbit_rep_cache.get(orbit_signature)
+        if orbit_rep is None:
+            orbit_matrices = {
+                g: _permutation_matrix(np.array([orbit_pos[permutations[g][idx]] for idx in orbit], dtype=int))
+                for g in G.elements
+            }
+            orbit_rep = escnn_representation_form_mapping(
+                G,
+                orbit_matrices,
+                name=f"heightmap_orbit_{len(orbit_rep_cache)}",
+            )
+            orbit_rep_cache[orbit_signature] = orbit_rep
+
+        orbit_reps.append(orbit_rep)
+        for idx in orbit:
+            orbit_to_flat[idx, orbit_basis_idx + orbit_pos[idx]] = 1.0
+        orbit_basis_idx += len(orbit)
+
+    heightmap_orbit_rep = directsum(orbit_reps, name=f"heightmap:{rows}x{cols}:orbits")
+    change_of_basis = orbit_to_flat @ heightmap_orbit_rep.change_of_basis
+    change_of_basis_inv = heightmap_orbit_rep.change_of_basis_inv @ orbit_to_flat.T
+
+    return Representation(
+        G,
+        name=f"heightmap:{rows}x{cols}",
+        irreps=heightmap_orbit_rep.irreps,
+        change_of_basis=change_of_basis,
+        change_of_basis_inv=change_of_basis_inv,
+        representation=full_representation,
+    )
 
 
 def configure_observation_space_representations(
@@ -114,8 +260,13 @@ def configure_observation_space_representations(
         elif obs_name in ["position_gains", "velocity_gains", "friction_static", "friction_dynamic", "armature"]:
             obs_reps[obs_name] = rep_Q_js  # Every joints can have different values!
         elif "heightmap" in obs_name:
-            raise NotImplementedError(
-                f"Heightmap observation representation is not implemented for robot {robot_name}."
+            heightmap_rows, heightmap_cols = _parse_heightmap_shape(obs_name)
+            obs_reps[obs_name] = _heightmap_representation(
+                G,
+                rep_Rd,
+                heightmap_rows,
+                heightmap_cols,
+                escnn_representation_form_mapping,
             )
         else:
             raise ValueError(f"Invalid observation name: {obs_name}")

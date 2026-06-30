@@ -1,161 +1,32 @@
-# Add reference to paper
+# Copyright (c) 2021-2025, ETH Zurich and NVIDIA CORPORATION
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
 
 from __future__ import annotations
 
-import warnings
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from itertools import chain
 from tensordict import TensorDict
 
-import escnn
-from escnn.nn import FieldType
-from hydra import compose, initialize
-from hydra.core.global_hydra import GlobalHydra
-from rsl_rl.modules import ActorCritic
+from rsl_rl.modules import ActorCritic, ActorCriticCNN, ActorCriticRecurrent
+from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.algorithms import PPO
-from morphosymm_rl.symm_utils import configure_observation_space_representations
+from rsl_rl.utils import resolve_callable
 
 
-def _linear_layers(module: nn.Module) -> list[nn.Linear]:
-    if isinstance(module, nn.Linear):
-        return [module]
-    return [layer for layer in module.children() if isinstance(layer, nn.Linear)]
+class PPO:
+    """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
 
-
-def _field_representation_matrices(field_type: FieldType, elements, device: torch.device, dtype: torch.dtype):
-    return [field_type.fiber_representation(g).to(device=device, dtype=dtype) for g in elements]
-
-
-def _hidden_representation_matrices(G, size: int, elements, device: torch.device, dtype: torch.dtype):
-    regular_size = G.regular_representation.size
-    regular_blocks = size // regular_size
-    trivial_size = size % regular_size
-    matrices = []
-
-    for g in elements:
-        blocks = [
-            torch.as_tensor(G.regular_representation(g), device=device, dtype=dtype)
-            for _ in range(regular_blocks)
-        ]
-        if trivial_size:
-            blocks.append(torch.eye(trivial_size, device=device, dtype=dtype))
-        matrices.append(torch.block_diag(*blocks) if blocks else torch.empty((0, 0), device=device, dtype=dtype))
-
-    return matrices
-
-
-def _project_linear_layer(layer: nn.Linear, in_mats, out_mats) -> None:
-    projected_weight = torch.zeros_like(layer.weight)
-    original_weight_norm = torch.linalg.vector_norm(layer.weight)
-
-    for in_mat, out_mat in zip(in_mats, out_mats):
-        projected_weight += out_mat.transpose(0, 1) @ layer.weight @ in_mat
-    projected_weight /= len(in_mats)
-
-    projected_weight_norm = torch.linalg.vector_norm(projected_weight)
-    if original_weight_norm > 0 and projected_weight_norm > 0:
-        projected_weight *= original_weight_norm / projected_weight_norm
-
-    layer.weight.copy_(projected_weight)
-
-    if layer.bias is not None:
-        projected_bias = torch.zeros_like(layer.bias)
-        for out_mat in out_mats:
-            projected_bias += out_mat.transpose(0, 1) @ layer.bias
-        layer.bias.copy_(projected_bias / len(out_mats))
-
-
-def _project_mlp_initialization(
-    mlp: nn.Module,
-    in_mats,
-    out_mats,
-    hidden_mats_factory,
-    name: str,
-) -> bool:
-    linear_layers = _linear_layers(mlp)
-    if not linear_layers:
-        warnings.warn(f"Could not symmetrize {name}: no linear layers found.", stacklevel=2)
-        return False
-
-    expected_in_features = in_mats[0].shape[0]
-    if linear_layers[0].in_features != expected_in_features:
-        warnings.warn(
-            f"Could not symmetrize {name}: first layer expects {linear_layers[0].in_features} inputs, "
-            f"but the symmetry representation has size {expected_in_features}.",
-            stacklevel=2,
-        )
-        return False
-
-    previous_mats = in_mats
-    for layer_idx, layer in enumerate(linear_layers):
-        is_last_layer = layer_idx == len(linear_layers) - 1
-        next_mats = out_mats if is_last_layer else hidden_mats_factory(layer.out_features)
-
-        if layer.in_features != previous_mats[0].shape[0] or layer.out_features != next_mats[0].shape[0]:
-            warnings.warn(
-                f"Could not symmetrize {name}: layer {layer_idx} has shape "
-                f"{layer.out_features}x{layer.in_features}, expected "
-                f"{next_mats[0].shape[0]}x{previous_mats[0].shape[0]}.",
-                stacklevel=2,
-            )
-            return False
-
-        _project_linear_layer(layer, previous_mats, next_mats)
-        previous_mats = next_mats
-
-    return True
-
-
-def _trivial_representation_matrices(size: int, reference_mats) -> list[torch.Tensor]:
-    return [torch.eye(size, device=mat.device, dtype=mat.dtype) for mat in reference_mats]
-
-
-def _strip_trailing_trivial_dimension(mats) -> list[torch.Tensor] | None:
-    stripped_mats = []
-    for mat in mats:
-        if mat.shape[0] == 0 or mat.shape[0] != mat.shape[1]:
-            return None
-
-        trailing_col = mat[:-1, -1]
-        trailing_row = mat[-1, :-1]
-        trailing_value = mat[-1, -1]
-        if not torch.allclose(trailing_col, torch.zeros_like(trailing_col)):
-            return None
-        if not torch.allclose(trailing_row, torch.zeros_like(trailing_row)):
-            return None
-        if not torch.allclose(trailing_value, torch.ones_like(trailing_value)):
-            return None
-
-        stripped_mats.append(mat[:-1, :-1])
-
-    return stripped_mats
-
-
-
-def _project_network_initialization(
-    network: nn.Module,
-    in_mats,
-    out_mats,
-    hidden_mats_factory,
-    name: str,
-) -> bool:
-    return _project_mlp_initialization(network, in_mats, out_mats, hidden_mats_factory, name)
-
-
-class PPOSymmDataAugmented:
-    """Proximal Policy Optimization algorithm with data augmentation via symmetries."""
-
-    policy: ActorCritic
+    policy: ActorCritic | ActorCriticRecurrent | ActorCriticCNN
     """The actor critic module."""
 
     def __init__(
         self,
-        policy,
-        storage_hack: RolloutStorage,
-        obs_hack: TensorDict,
+        policy: ActorCritic | ActorCriticRecurrent | ActorCriticCNN,
+        storage: RolloutStorage,
         num_learning_epochs: int = 5,
         num_mini_batches: int = 4,
         clip_param: float = 0.2,
@@ -170,24 +41,71 @@ class PPOSymmDataAugmented:
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
         device: str = "cpu",
-        **morphologycal_symmetries_cfg,
-    ):
+        # RND parameters
+        rnd_cfg: dict | None = None,
+        # Symmetry parameters
+        symmetry_cfg: dict | None = None,
+        # Distributed training parameters
+        multi_gpu_cfg: dict | None = None,
+    ) -> None:
+        # Device-related parameters
         self.device = device
-        self.is_multi_gpu = False
-        self.gpu_global_rank = 0
-        self.gpu_world_size = 1
-        self.rnd = None
-        self.rnd_optimizer = None
-        self.symmetry = None
+        self.is_multi_gpu = multi_gpu_cfg is not None
 
-        self.desired_kl = desired_kl
-        self.schedule = schedule
-        self.learning_rate = learning_rate
-        self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        # Multi-GPU parameters
+        if multi_gpu_cfg is not None:
+            self.gpu_global_rank = multi_gpu_cfg["global_rank"]
+            self.gpu_world_size = multi_gpu_cfg["world_size"]
+        else:
+            self.gpu_global_rank = 0
+            self.gpu_world_size = 1
+
+        # RND components
+        if rnd_cfg:
+            # Extract parameters used in ppo
+            rnd_lr = rnd_cfg.pop("learning_rate", 1e-3)
+            # Create RND module
+            self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg)
+            # Create RND optimizer
+            params = self.rnd.predictor.parameters()
+            self.rnd_optimizer = optim.Adam(params, lr=rnd_lr)
+        else:
+            self.rnd = None
+            self.rnd_optimizer = None
+
+        # Symmetry components
+        if symmetry_cfg is not None:
+            # Check if symmetry is enabled
+            use_symmetry = symmetry_cfg["use_data_augmentation"] or symmetry_cfg["use_mirror_loss"]
+            # Print that we are not using symmetry
+            if not use_symmetry:
+                print("Symmetry not used for learning. We will use it for logging instead.")
+            # Resolve the data augmentation function (supports string names or direct callables)
+            symmetry_cfg["data_augmentation_func"] = resolve_callable(symmetry_cfg["data_augmentation_func"])
+            # Check valid configuration
+            if not callable(symmetry_cfg["data_augmentation_func"]):
+                raise ValueError(
+                    f"Symmetry configuration exists but the function is not callable: "
+                    f"{symmetry_cfg['data_augmentation_func']}"
+                )
+            # Check if the policy is compatible with symmetry
+            if isinstance(policy, ActorCriticRecurrent):
+                raise ValueError("Symmetry augmentation is not supported for recurrent policies.")
+            # Store symmetry configuration
+            self.symmetry = symmetry_cfg
+        else:
+            self.symmetry = None
 
         # PPO components
         self.policy = policy
         self.policy.to(self.device)
+
+        # Create the optimizer
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
+
+        # Add storage
+        self.storage = storage
+        self.transition = RolloutStorage.Transition()
 
         # PPO parameters
         self.clip_param = clip_param
@@ -203,141 +121,6 @@ class PPOSymmDataAugmented:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
-
-        # MorphoSymm components
-        obs_space_names_actor = morphologycal_symmetries_cfg["obs_space_names_actor"]
-        obs_space_names_critic = morphologycal_symmetries_cfg["obs_space_names_critic"]
-        action_space_names = morphologycal_symmetries_cfg["action_space_names"]
-        joints_order = morphologycal_symmetries_cfg["joints_order"]
-        robot_name = morphologycal_symmetries_cfg["robot_name"]
-        symmetric_initialization = morphologycal_symmetries_cfg.pop("symmetric_initialization", True)
-
-        G_actor, obs_reps_actor = configure_observation_space_representations(
-            robot_name, obs_space_names_actor, joints_order
-        )
-        G_critic, obs_reps_critic = configure_observation_space_representations(
-            robot_name, obs_space_names_critic, joints_order
-        )
-
-        obs_space_reps_actor = [obs_reps_actor[n] for n in obs_space_names_actor]
-        obs_space_reps_critic = [obs_reps_critic[n] for n in obs_space_names_critic]
-        act_space_reps = [obs_reps_actor[n] for n in action_space_names]
-
-        self.G = G_actor
-        gspace = escnn.gspaces.no_base_space(self.G)
-        self.num_replica = len(self.G.elements)
-        # Actor replica
-        self.actor_in_type = FieldType(gspace, obs_space_reps_actor)
-        self.actor_out_type = FieldType(gspace, act_space_reps)
-        # Critic replica
-        self.critic_in_field_type = FieldType(gspace, obs_space_reps_critic)
-
-        if symmetric_initialization:
-            self._apply_symmetric_initialization()
-
-        # Create the optimizer after the optional symmetric projection of the initial parameters.
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
-
-        # Add storage
-        #self.storage = storage
-        
-        # Initialize the storage
-        # Build an empty TensorDict `obs` whose batch size is expanded to
-        # `storage_hack.num_envs * self.num_replica` while keeping the
-        # per-field trailing dimensions and dtypes from `obs_hack`.
-        batch_size = int(storage_hack.num_envs * self.num_replica)
-        # Infer per-field shapes, device and dtype from the provided `obs_hack`.
-        policy_shape = tuple(obs_hack["policy"].shape[1:])
-        critic_shape = tuple(obs_hack["critic"].shape[1:])
-        device = obs_hack["policy"].device
-
-        obs = TensorDict(
-            {
-                "policy": torch.empty((batch_size, *policy_shape), device=device, dtype=obs_hack["policy"].dtype),
-                "critic": torch.empty((batch_size, *critic_shape), device=device, dtype=obs_hack["critic"].dtype),
-            },
-            batch_size=torch.Size([batch_size]),
-            device=device,
-        )
-
-        self.storage = RolloutStorage(
-            "rl",
-            storage_hack.num_envs * self.num_replica,
-            storage_hack.num_transitions_per_env,
-            obs,
-            storage_hack.actions_shape,
-            storage_hack.device,
-        )
-        self.transition = RolloutStorage.Transition()
-
-    def _apply_symmetric_initialization(self) -> None:
-        """Project the initial policy weights to symmetry-compatible subspaces."""
-        with torch.no_grad():
-            dtype = next(self.policy.parameters()).dtype
-            device = next(self.policy.parameters()).device
-            elements = self.G.elements
-            hidden_mats_cache = {}
-
-            actor_in_mats = _field_representation_matrices(self.actor_in_type, elements, device, dtype)
-            actor_out_mats = _field_representation_matrices(self.actor_out_type, elements, device, dtype)
-            critic_in_mats = _field_representation_matrices(self.critic_in_field_type, elements, device, dtype)
-            critic_out_mats = [torch.ones((1, 1), device=device, dtype=dtype) for _ in elements]
-
-            def hidden_mats_factory(size: int):
-                if size not in hidden_mats_cache:
-                    hidden_mats_cache[size] = _hidden_representation_matrices(self.G, size, elements, device, dtype)
-                return hidden_mats_cache[size]
-
-            actor_layers = _linear_layers(self.policy.actor)
-            if actor_layers:
-                actor_last_out_features = actor_layers[-1].out_features
-                if actor_last_out_features == self.actor_out_type.size:
-                    projected_actor_out_mats = actor_out_mats
-                elif actor_last_out_features == 2 * self.actor_out_type.size:
-                    projected_actor_out_mats = [
-                        torch.block_diag(action_mat, action_mat.abs()) for action_mat in actor_out_mats
-                    ]
-                else:
-                    projected_actor_out_mats = actor_out_mats
-            else:
-                projected_actor_out_mats = actor_out_mats
-
-            _project_network_initialization(
-                self.policy.actor,
-                actor_in_mats,
-                projected_actor_out_mats,
-                hidden_mats_factory,
-                "actor",
-            )
-            _project_network_initialization(
-                self.policy.critic,
-                critic_in_mats,
-                critic_out_mats,
-                hidden_mats_factory,
-                "critic",
-            )
-            self._project_action_std_initialization(actor_out_mats)
-
-    def _project_action_std_initialization(self, actor_out_mats) -> None:
-        std_param = None
-        if hasattr(self.policy, "std"):
-            std_param = self.policy.std
-        elif hasattr(self.policy, "log_std"):
-            std_param = self.policy.log_std
-
-        if std_param is None:
-            return
-
-        if std_param.ndim == 1 and std_param.shape[0] == self.actor_out_type.size:
-            projected_std = torch.zeros_like(std_param)
-            for action_mat in actor_out_mats:
-                projected_std += action_mat.abs().transpose(0, 1) @ std_param
-            std_param.copy_(projected_std / len(actor_out_mats))
-        elif std_param.ndim == 2 and std_param.shape[1] == self.actor_out_type.size:
-            projected_std = torch.zeros_like(std_param)
-            for action_mat in actor_out_mats:
-                projected_std += std_param @ action_mat.abs()
-            std_param.copy_(projected_std / len(actor_out_mats))
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
@@ -378,73 +161,15 @@ class PPOSymmDataAugmented:
                 self.transition.values * extras["time_outs"].unsqueeze(1).to(self.device), 1
             )
 
-        # Augment the transition
-        self.augment_transitions()
-
         # Record the transition
         self.storage.add_transition(self.transition)
         self.transition.clear()
         self.policy.reset(dones)
 
-    def augment_transitions(self):
-        t = self.transition
-
-        out_field_type = self.actor_out_type
-        in_field_type = self.actor_in_type
-        critic_in_field_type = self.critic_in_field_type
-        G = self.G
-        t.actions = torch.cat(
-            [t.actions] + [out_field_type.transform_fibers(t.actions, g) for g in G.elements[1:]],
-            dim=0,
-        )
-        t.actions_log_prob = torch.cat([t.actions_log_prob] * self.num_replica, dim=0)
-        t.action_mean = torch.cat(
-            [t.action_mean] + [out_field_type.transform_fibers(t.action_mean, g) for g in G.elements[1:]],
-            dim=0,
-        )
-        t.action_sigma = torch.abs(
-            torch.cat(
-                [t.action_sigma] + [out_field_type.transform_fibers(t.action_sigma, g) for g in G.elements[1:]],
-                dim=0,
-            )
-        )
-        t.values = torch.cat([t.values] * self.num_replica, dim=0)
-        t.rewards = torch.cat([t.rewards] * self.num_replica, dim=0)
-        t.dones = torch.cat([t.dones] * self.num_replica, dim=0)
-
-        # Build augmented observation tensors. TensorDict enforces a consistent batch_size,
-        # so create a new TensorDict with the expanded batch instead of assigning leaves
-        # with a mismatched batch dimension.
-        policy_obs_aug = torch.cat(
-            [t.observations["policy"]]
-            + [in_field_type.transform_fibers(t.observations["policy"], g) for g in G.elements[1:]],
-            dim=0,
-        )
-        critic_obs_aug = torch.cat(
-            [t.observations["critic"]]
-            + [critic_in_field_type.transform_fibers(t.observations["critic"], g) for g in G.elements[1:]],
-            dim=0,
-        )
-
-        # Create a new TensorDict with the correct (expanded) batch size and assign it.
-        t.observations = TensorDict(
-            {
-                "policy": policy_obs_aug,
-                "critic": critic_obs_aug,
-            },
-            batch_size=policy_obs_aug.shape[:1],
-        )
-
-    def augment_values(self, values):
-        values = torch.cat([values] * self.num_replica, dim=0)
-        return values
-
     def compute_returns(self, obs: TensorDict) -> None:
         st = self.storage
         # Compute value for the last step
-        last_values_temp = self.policy.evaluate(obs).detach()
-        # Augment the last values with symmetries
-        last_values = self.augment_values(last_values_temp)
+        last_values = self.policy.evaluate(obs).detach()
         # Compute returns and advantages
         advantage = 0
         for step in reversed(range(st.num_transitions_per_env)):

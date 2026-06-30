@@ -11,7 +11,7 @@ import torch
 import warnings
 from tensordict import TensorDict
 
-from rsl_rl.algorithms import PPO
+#from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import (
     ActorCritic,
@@ -25,8 +25,8 @@ from rsl_rl.utils import resolve_callable, resolve_obs_groups
 from rsl_rl.utils.logger import Logger
 
 from morphosymm_rl.modules.ac_symm import ActorCriticSymm
-from morphosymm_rl.modules.ac_moe import ActorCriticMoE
 from morphosymm_rl.algorithms.ppo_symm_data_augment import PPOSymmDataAugmented
+from morphosymm_rl.algorithms.ppo import PPO
 
 
 class SymmOnPolicyRunner:
@@ -41,6 +41,8 @@ class SymmOnPolicyRunner:
 
         # Morphological symmetries configuration
         self.morphologycal_symmetries_cfg = train_cfg["morphologycal_symmetries_cfg"]
+        self.schedule_fixed_to_adaptive_switch = self.morphologycal_symmetries_cfg.get("schedule_fixed_to_adaptive_switch", None)
+
 
         # Setup multi-GPU training if enabled
         self._configure_multi_gpu()
@@ -86,6 +88,11 @@ class SymmOnPolicyRunner:
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
         for it in range(start_it, total_it):
+            
+            if(self.schedule_fixed_to_adaptive_switch is not None): 
+                if it == self.schedule_fixed_to_adaptive_switch:
+                    self.alg.schedule = "adaptive"
+                    
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -117,6 +124,8 @@ class SymmOnPolicyRunner:
             learn_time = stop - start
             self.current_learning_iteration = it
 
+            action_std = getattr(self.alg.policy, "action_std_for_logging", self.alg.policy.action_std)
+
             # Log information
             self.logger.log(
                 it=it,
@@ -126,7 +135,7 @@ class SymmOnPolicyRunner:
                 learn_time=learn_time,
                 loss_dict=loss_dict,
                 learning_rate=self.alg.learning_rate,
-                action_std=self.alg.policy.action_std,
+                action_std=action_std,
                 rnd_weight=self.alg.rnd.weight if self.alg_cfg["rnd_cfg"] else None,
             )
 
@@ -279,11 +288,6 @@ class SymmOnPolicyRunner:
             actor_critic: ActorCriticSymm = ActorCriticSymm(
                 num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg, **self.morphologycal_symmetries_cfg
             ).to(self.device)
-        elif self.policy_cfg["class_name"] == "ActorCriticMoE":
-            self.policy_cfg.pop("class_name")
-            actor_critic: ActorCriticMoE = ActorCriticMoE(
-                obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
-            ).to(self.device)
         else:
             actor_critic_class = resolve_callable(self.policy_cfg.pop("class_name"))
             actor_critic: ActorCritic | ActorCriticRecurrent | ActorCriticCNN = actor_critic_class(
@@ -302,8 +306,12 @@ class SymmOnPolicyRunner:
                 actor_critic, storage, obs, device=self.device, **self.alg_cfg, **self.morphologycal_symmetries_cfg
             )
         else:
-            alg_class = resolve_callable(self.alg_cfg.pop("class_name"))
-            alg: PPO = alg_class(
+            #alg_class = resolve_callable(self.alg_cfg.pop("class_name"))
+            #alg: PPO = alg_class(
+            #    actor_critic, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
+            #)
+            self.alg_cfg.pop("class_name")
+            alg: PPO = PPO(
                 actor_critic, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
             )
 

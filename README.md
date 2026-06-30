@@ -12,7 +12,7 @@ pip install -e .
 
 ## How to use
 
-To use it, you just need first to change the usual rsl_rl_ppo_cfg.py file of your task in IsaacLab. Second, you need to use ad-hoc train.py and play.py files to launch your training/testing. See [here](https://github.com/iit-DLSLab/morphosymm-rl/tree/main/morphosymm_rl/example) for an example.
+See [here](https://github.com/iit-DLSLab/morphosymm-rl/blob/feature/main/README_how_to.md).
 
 ## Citing this work
 
@@ -45,3 +45,7 @@ If you find the work useful, please consider citing one of our works:
   doi = {10.1177/02783649241282422}
 }
 ```
+
+## Maintainer
+
+This repository is maintained by [Giulio Turrisi](https://github.com/giulioturrisi)
