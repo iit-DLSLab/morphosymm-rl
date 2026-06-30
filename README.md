@@ -45,3 +45,7 @@ If you find the work useful, please consider citing one of our works:
   doi = {10.1177/02783649241282422}
 }
 ```
+
+## Maintainer
+
+This repository is maintained by [Giulio Turrisi](https://github.com/giulioturrisi)

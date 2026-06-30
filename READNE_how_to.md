@@ -28,21 +28,7 @@ pyproject.toml                  # Package metadata and dependencies.
 
 This repository is a library layer. It does not currently ship a complete IsaacLab task, environment, or standalone `train.py`. Your IsaacLab project still owns the task definition, observation tensors, reward, command manager, terrain, logging setup, and train/play scripts.
 
-## Installation
 
-From the root of this repository:
-
-```bash
-pip install -e .
-```
-
-Use the same Python environment that already has IsaacLab, Isaac Sim, and RSL-RL available. The package depends on:
-
-- `rsl-rl-lib==3.3.0`
-- `morpho-symm[pin]`
-- `symm-learning>=0.2.5`
-- `torch`, `torchvision`
-- `gym-quadruped`
 
 ## How the Pieces Fit Together
 
@@ -330,81 +316,4 @@ If your actor and critic observations differ, make `obs_space_names_actor` and `
 
 ## Minimal Config Skeleton
 
-
-Depending on your RSL-RL/IsaacLab config loader, the regular actor-critic class name may already be expressed differently. The important part for this package is that `SymmOnPolicyRunner` sees:
-
-- `algorithm["class_name"] == "PPOSymmDataAugmented"` for rollout data augmentation
-- `policy["class_name"] == "ActorCriticSymm"` for the equivariant actor/invariant critic path
-
-## Checklist for a New Robot Task
-
-1. Confirm the robot exists in `morpho_symm`, or add a new robot description there.
-2. Confirm the IsaacLab action order.
-3. Set `joints_order` to that exact order.
-4. Write down the actor observation tensor as a list of physical blocks.
-5. Translate each block to one of the supported observation names.
-6. Do the same for critic observations.
-7. Set `action_space_names`; for joint actions this is usually `["actions"]`.
-8. Run one short training job with a small number of environments.
-9. If dimensions fail, compare the summed representation sizes against the actual observation/action tensor sizes.
-10. Once the config is correct, scale up training.
-
-## Common Errors
-
-### `ValueError: Invalid observation name`
-
-One of the names in `obs_space_names_actor`, `obs_space_names_critic`, or `action_space_names` is not supported by `symm_utils.py`.
-
-Fix it by either:
-
-- renaming the config entry to a supported name, if it has the same physical meaning
-- adding a new mapping in `configure_observation_space_representations`
-
-### Robot Config Not Found
-
-If `morpho_symm` cannot load the robot, the `robot_name` does not match a YAML file in `morpho_symm/cfg/robot`.
-
-Use the robot discovery command above and copy the name exactly, including suffixes such as `-c2` or `-k4`.
-
-### Joint Order Mismatch
-
-If `joints_order` has the wrong length or names, `morpho_symm` will fail while loading the symmetric system.
-
-Fix it by printing the IsaacLab joint order and using those exact names. Do not assume that URDF order, action-manager order, and config-file order are automatically the same.
-
-### Observation Size Mismatch
-
-If the first layer or representation size does not match, the observation list probably does not describe the actual flattened tensor.
-
-Check:
-
-- missing observation blocks
-- extra observation blocks
-- actor and critic lists accidentally swapped
-- command dimensions that do not match `ctrl_commands`
-- quaternion observations included even though they are skipped
-- joint observations using a different joint order than `joints_order`
-
-### Heightmap Errors
-
-Heightmap observations must be named with dimensions, for example:
-
-```text
-heightmap:64x32
-```
-
-The transform currently supports signed-permutation horizontal actions. More general geometric transforms need a custom representation.
-
-## Practical Advice
-
-Start with the data-augmentation path first. It keeps the network familiar and mostly changes how rollouts are stored and transformed. Once that is stable, try `ActorCriticSymm` if you want architectural equivariance.
-
-When debugging, use a tiny run:
-
-```text
-num_envs: small
-num_steps_per_env: small
-max_iterations: 1 to 5
-```
-
-The first goal is not performance. The first goal is proving that robot name, joint order, observation names, and action names agree with each other.
+See in example!
